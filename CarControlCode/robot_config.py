@@ -15,83 +15,122 @@ def clamp(value, low, high):
 # 硬件端口与运行模式
 # =============================================================================
 
-RUN_MODE = "ps2"  # "idle" | "ps2"
+RUN_MODE = "ps2"
+"""程序运行模式："ps2" 使用 PS2 手柄遥控，"idle" 执行 main.py 中的学生示例程序。"""
 
-#uart接线
 SERVO_UART_ID    = 2
+"""舵机总线使用的 ESP32 硬件 UART 编号；必须与当前固件支持的 UART 外设一致。"""
 SERVO_UART_BAUD  = 115200
+"""舵机 UART 通信波特率，单位 baud；必须与 Fashion Star 舵机总线配置一致。"""
 SERVO_UART_TX    = 16
+"""舵机 UART 发送引脚 GPIO 编号，连接舵机总线的 RX/数据输入端。"""
 SERVO_UART_RX    = 17
+"""舵机 UART 接收引脚 GPIO 编号，连接舵机总线的 TX/数据输出端。"""
 
-#摄像头接线
 CAMERA_UART_ID   = 1
+"""相机通信使用的 ESP32 硬件 UART 编号；不能与舵机 UART 编号冲突。"""
 CAMERA_UART_BAUD = 115200
+"""相机 UART 通信波特率，单位 baud；必须与相机端程序的串口配置一致。"""
 CAMERA_UART_TX   = 5
+"""相机 UART 发送引脚 GPIO 编号，用于向相机发送应答或控制数据。"""
 CAMERA_UART_RX   = 6
+"""相机 UART 接收引脚 GPIO 编号，用于接收相机识别结果。"""
 
-#can接线
 CAN_BUS_ID = 0
+"""驱动电机使用的 ESP32 CAN 控制器编号；当前项目使用 CAN0。"""
 CAN_BAUDRATE = 1000000
+"""CAN 总线通信速率，单位 bit/s；所有电机驱动器必须配置为相同速率。"""
 CAN_TX = 8
+"""CAN 控制器发送引脚 GPIO 编号，应连接外部 CAN 收发器的 TXD。"""
 CAN_RX = 18
+"""CAN 控制器接收引脚 GPIO 编号，应连接外部 CAN 收发器的 RXD。"""
 
-#ps2手柄的接线
 PS2_DI = 9
+"""PS2 接收器 DI 引脚对应的 ESP32 GPIO；数据方向为手柄接收器到 ESP32。"""
 PS2_DO = 10
+"""PS2 接收器 DO 引脚对应的 ESP32 GPIO；数据方向为 ESP32 到手柄接收器。"""
 PS2_CS = 11
+"""PS2 接收器片选 CS 引脚对应的 ESP32 GPIO，低电平时选中手柄。"""
 PS2_CLK = 12
+"""PS2 接收器时钟 CLK 引脚对应的 ESP32 GPIO，由软件模拟 SPI 时钟。"""
 
 
 # =============================================================================
 # 底盘配置
 # =============================================================================
 
-MAX_MOTOR_RPM = 200.0             # 最大电机转速
-DEFAULT_ACC_RAD_S2 = 20.0         # 电机加速度rad/s^2
+MAX_MOTOR_RPM = 200.0
+"""单个驱动电机允许的最大转速，单位 r/min；PS2 油门会按此值换算角速度。"""
+DEFAULT_ACC_RAD_S2 = 20.0
+"""驱动电机默认角加速度，单位 rad/s^2；数值越大，启停和变速响应越快。"""
 
-MAX_STEER_ANGLE_DEG = 90.0       # 最大转向角度
-PIVOT_SPEED_SCALE = 0.3          # 原地转向速度比例  v_pivot_max = v_max * PIVOT_SPEED_SCALE
+MAX_STEER_ANGLE_DEG = 90.0
+"""普通行驶时允许的最大转向输入角，单位度；实际舵机角度仍会受各自限位约束。"""
+PIVOT_SPEED_SCALE = 0.3
+"""原地旋转最大速度相对普通最大电机速度的比例，范围建议为 0.0～1.0。"""
 
 
 # =============================================================================
 # 舵机配置
 # =============================================================================
 
-BASE_SERVO_IDS = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11)  # 基础舵机 ID，同调试软件配置结果，不要修改
-CAMERA_SERVO_ID = 8              # 相机舵机 ID  #同调试软件配置结果  不要修改
+BASE_SERVO_IDS = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11)
+"""项目固定安装的全部基础舵机 ID；应与舵机调试软件中写入的 ID 保持一致。"""
+CAMERA_SERVO_ID = 8
+"""相机云台舵机 ID；该 ID 来自实际舵机配置，非更换硬件或重新编号时不要修改。"""
 
-# 预留舵机：未安装时保持 RESERVE_SERVO_ENABLED = False
-RESERVE_SERVO_ENABLED = False       # 默认 False
-RESERVE_SERVO_IDS = (14,)          # 可填多个 ID，如 (13, 14)
-RESERVE_SERVO_SIGNS = {14: 1}      # 每个 ID 的方向符号，1 或 -1，如 {13: 1, 14: -1}
-RESERVE_SERVO_INIT_ANGLE_DEG = {14: 0.0}   # 每个 ID 的初始角，如 {13: 0.0, 14: 10.0}
-RESERVE_SERVO_MIN_DEG = {14: -90.0}        # 每个 ID 的下限，如 {13: -90.0, 14: 0.0}
-RESERVE_SERVO_MAX_DEG = {14: 90.0}         # 每个 ID 的上限，如 {13: 90.0, 14: 45.0}
+RESERVE_SERVO_ENABLED = False
+"""是否初始化并允许控制预留舵机；未安装预留舵机时必须保持 False。"""
+RESERVE_SERVO_IDS = (14,)
+"""预留舵机 ID 元组；启用后可配置一个或多个 ID，例如 (13, 14)。"""
+RESERVE_SERVO_SIGNS = {14: 1}
+"""每个预留舵机的方向系数：1 表示同向，-1 表示反向；键必须对应预留舵机 ID。"""
+RESERVE_SERVO_INIT_ANGLE_DEG = {14: 0.0}
+"""每个预留舵机上电初始化的逻辑角度，单位度；键必须对应预留舵机 ID。"""
+RESERVE_SERVO_MIN_DEG = {14: -90.0}
+"""每个预留舵机允许的最小逻辑角度，单位度；用于限制控制命令以保护机构。"""
+RESERVE_SERVO_MAX_DEG = {14: 90.0}
+"""每个预留舵机允许的最大逻辑角度，单位度；必须大于或等于对应最小角度。"""
 
-#舵机控制上下限配置
-STEER_ANGLE_MIN_DEG = -90.0      # 转向舵机
-STEER_ANGLE_MAX_DEG = 90.0       
-CAMERA_ANGLE_MIN_DEG = -90.0     # 相机舵机
+STEER_ANGLE_MIN_DEG = -90.0
+"""六个底盘转向舵机允许的最小逻辑角度，单位度。"""
+STEER_ANGLE_MAX_DEG = 90.0
+"""六个底盘转向舵机允许的最大逻辑角度，单位度。"""
+CAMERA_ANGLE_MIN_DEG = -90.0
+"""相机舵机允许的最小逻辑角度，单位度；设置目标角时会裁剪到此下限。"""
 CAMERA_ANGLE_MAX_DEG = 0.0
-ARM_ROLL_MIN_DEG = -180.0        #机械臂Roll舵机
+"""相机舵机允许的最大逻辑角度，单位度；当前 0 度为上限。"""
+ARM_ROLL_MIN_DEG = -180.0
+"""机械臂 Roll 关节允许的最小逻辑角度，单位度。"""
 ARM_ROLL_MAX_DEG = 180.0
-ARM_PITCH1_MIN_DEG = -90.0       #机械臂pitch1舵机
+"""机械臂 Roll 关节允许的最大逻辑角度，单位度。"""
+ARM_PITCH1_MIN_DEG = -90.0
+"""机械臂 Pitch1 关节允许的最小逻辑角度，单位度。"""
 ARM_PITCH1_MAX_DEG = 90.0
-ARM_PITCH2_MIN_DEG = -150.0       #机械臂pitch2舵机
+"""机械臂 Pitch1 关节允许的最大逻辑角度，单位度。"""
+ARM_PITCH2_MIN_DEG = -150.0
+"""机械臂 Pitch2 关节允许的最小逻辑角度，单位度。"""
 ARM_PITCH2_MAX_DEG = 150.0
-ARM_PITCH3_MIN_DEG = -150.0       #机械臂pitch3舵机
+"""机械臂 Pitch2 关节允许的最大逻辑角度，单位度。"""
+ARM_PITCH3_MIN_DEG = -150.0
+"""机械臂 Pitch3 关节允许的最小逻辑角度，单位度。"""
 ARM_PITCH3_MAX_DEG = 150.0
+"""机械臂 Pitch3 关节允许的最大逻辑角度，单位度。"""
 
 
 # =============================================================================
 # 机械臂配置
 # =============================================================================
 
-ARM_SERVO_SPEED_DEG_S = 60.0 #机械臂默认运动速度
+ARM_SERVO_SPEED_DEG_S = 60.0
+"""机械臂各关节执行角度命令时的默认运动速度，单位 deg/s。"""
 
-#机械臂初始位配置ji'xie
 ARM_INIT_ROLL_DEG = 0.0
+"""机械臂回初始姿态时 Roll 关节的目标逻辑角度，单位度。"""
 ARM_INIT_PITCH1_DEG = 50
+"""机械臂回初始姿态时 Pitch1 关节的目标逻辑角度，单位度。"""
 ARM_INIT_PITCH2_DEG = -140.0
+"""机械臂回初始姿态时 Pitch2 关节的目标逻辑角度，单位度。"""
 ARM_INIT_PITCH3_DEG = 0.0
+"""机械臂回初始姿态时 Pitch3 关节的目标逻辑角度，单位度。"""
 
