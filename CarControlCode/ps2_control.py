@@ -12,7 +12,14 @@ import math
 import time
 
 from arm_control import ArmKinematicsError
+from autonomous_control import AutonomousController
 from robot_config import (
+    CAMERA_TRACK_DEADZONE_PX,
+    CAMERA_TRACK_DIRECTION,
+    CAMERA_TRACK_ENABLED,
+    CAMERA_TRACK_KP_DEG_PER_PX,
+    CAMERA_TRACK_MAX_STEP_DEG,
+    CAMERA_TRACK_SPEED_DEG_S,
     MAX_MOTOR_RPM,
     MAX_STEER_ANGLE_DEG,
     PIVOT_SPEED_SCALE,
@@ -66,6 +73,57 @@ def map_joystick(raw_val, center=128, deadzone=12):
 def small_motion(value, threshold):
     # 过滤微小动作，如果计算出的运动增量小于设定阈值，则直接归零
     return 0.0 if abs(value) < threshold else value
+
+
+def handle_camera_tracking(rover, data, state):
+    """消费一条新的视觉目标消息，用水平dx小步调整相机舵机。"""
+    target = data.get("target")
+    if target is None:
+        return
+
+    sequence = target.get("sequence", -1)
+    if sequence == state["last_sequence"]:
+        return
+    state["last_sequence"] = sequence
+
+    if not CAMERA_TRACK_ENABLED or rover.arm is None:
+        return
+
+    if not state["camera_synced"]:
+        try:
+            rover.arm.sync_camera_from_servo()
+            state["camera_synced"] = True
+            print("视觉对准：相机舵机当前角度 %.1f 度" % rover.arm.camera_angle_deg)
+        except ArmKinematicsError as err:
+            print_arm_error(err)
+            return
+
+    dx = int(target.get("dx", 0))
+    if abs(dx) <= CAMERA_TRACK_DEADZONE_PX:
+        if not state["centered"]:
+            print(
+                "视觉对准完成：color=%s dx=%d distance=%d"
+                % (target.get("color"), dx, target.get("distance", 0))
+            )
+        state["centered"] = True
+        return
+
+    state["centered"] = False
+    delta_deg = clamp(
+        dx * CAMERA_TRACK_KP_DEG_PER_PX * CAMERA_TRACK_DIRECTION,
+        -CAMERA_TRACK_MAX_STEP_DEG,
+        CAMERA_TRACK_MAX_STEP_DEG,
+    )
+    rover.arm.jog_camera(delta_deg, speed_deg_s=CAMERA_TRACK_SPEED_DEG_S)
+    print(
+        "视觉对准：color=%s dx=%d step=%.2f angle=%.1f"
+        % (
+            target.get("color"),
+            dx,
+            delta_deg,
+            rover.arm.camera_angle_deg,
+        )
+    )
 
 
 def button_pressed(data, btn):
@@ -213,41 +271,21 @@ def handle_arm_control(rover, ps2, buttons, lx, ly, rx, ry):
 # 主循环控制：演示如何从底层获取摇杆信息
 # ==============================================================================
 def ps2_loop(rover, ps2, data, serial):
-    print("PS2 控制：X失能，三角使能，R1停车，UP执行机械臂自动动作，R2+右摇杆左右原地转向，L2+O机械臂回初始位并相机回0，L2+方向键左右控制相机，上下控制Pitch3，L2+左摇杆前后控制Pitch2，右摇杆前后控制Pitch1，右摇杆左右控制Roll。")
+    print("PS2 控制：START启动视觉自动任务；R1随时急停；L2+方块打印九格标定角；X失能；三角使能；其余手动操作保持不变。")
     arm_mode_active = False
     up_button_latched = False
+    start_button_latched = False
+    pose_print_latched = False
+    auto = AutonomousController(rover, serial)
+    tracking_state = {
+        "last_sequence": -1,
+        "camera_synced": False,
+        "centered": False,
+    }
     
     while True:
         # 【第一步：触发底层更新】要求底层库发起一次 SPI 通信，读取手柄当前状态
         ps2.update()
-        serial_data = data["value"]
-        if serial_data is not None:
-            serial.write("ok")
-            code_data = serial_data.split()
-            if len(code_data) == 6:
-                color1, color2, color3, num1_str, num2_str, num3_str = code_data
-                try:
-                    num1 = int(num1_str)
-                    num2 = int(num2_str)
-                    num3 = int(num3_str)
-                    
-                    # 构建结构化数据判断位置和数量
-                    # 颜色的出现顺序代表了其在视野中的位置
-                    targets = [
-                        {"color": color1, "position": 1, "count": num1},
-                        {"color": color2, "position": 2, "count": num2},
-                        {"color": color3, "position": 3, "count": num3}
-                    ]
-                    
-                    # --- 测试输出 ---
-                    print("数据解析成功！目标信息如下：")
-                    for target in targets:
-                        print(f"位置 {target['position']}: 颜色为 {target['color']}, 数量为 {target['count']}")
-                except ValueError:
-                    print("错误：数量数据包含非数字字符，放弃当前帧。")
-            else:
-                print(f"警告：数据长度异常，期望6位，实际{len(camera_data)}位。原始数据: {camera_data}")
-            data["value"] = None
         # 【第二步：获取摇杆信息的关键快照】
         # snapshot() 返回一个包含当前帧所有手柄原始数据的元组
         # fresh: 数据是否有效/最新 (布尔值)
@@ -257,6 +295,7 @@ def ps2_loop(rover, ps2, data, serial):
         # rx: 右摇杆 X 轴原始数据 (0-255)
         # ry: 右摇杆 Y 轴原始数据 (0-255)
         fresh, buttons, lx, ly, rx, ry, _ = ps2.snapshot()
+
         #   if button_pressed(buttons, ps2.按键定义名称):
         #   按键定义名称如下：
         #   self.PS2_BTN_SELECT
@@ -277,22 +316,28 @@ def ps2_loop(rover, ps2, data, serial):
         #   self.PS2_BTN_SQUARE        
         # 如果获取数据失败 (手柄断开或通讯异常)，停止动作并重新尝试获取
         if not fresh:
-            rover.stop()
+            if auto.active:
+                auto.cancel("ps2_lost")
+            else:
+                rover.stop()
             arm_mode_active = False
             continue
 
         if button_pressed(buttons, ps2.PS2_BTN_SELECT):
+            auto.cancel("select_exit")
             rover.stop()
             print("SELECT：退出 PS2 控制。")
             break
 
         if button_pressed(buttons, ps2.PS2_BTN_R1):
+            auto.cancel("ps2_r1")
             rover.stop()
             arm_mode_active = False
             time.sleep_ms(100)
             continue
 
         if button_pressed(buttons, ps2.PS2_BTN_CROSS):
+            auto.cancel("motor_disable")
             rover.disable()
             arm_mode_active = False
             time.sleep_ms(200)
@@ -303,6 +348,51 @@ def ps2_loop(rover, ps2, data, serial):
             arm_mode_active = False
             time.sleep_ms(200)
             continue
+
+        start_pressed = button_pressed(buttons, ps2.PS2_BTN_START)
+        if not start_pressed:
+            start_button_latched = False
+        elif not start_button_latched:
+            start_button_latched = True
+            if auto.active:
+                auto.cancel("ps2_start_toggle")
+            else:
+                auto.start(data)
+            arm_mode_active = False
+            time.sleep_ms(120)
+            continue
+
+        if auto.active:
+            auto.update(data)
+            time.sleep_ms(20)
+            continue
+
+        pose_print_pressed = (
+            button_pressed(buttons, ps2.PS2_BTN_L2)
+            and button_pressed(buttons, ps2.PS2_BTN_SQUARE)
+        )
+        if not pose_print_pressed:
+            pose_print_latched = False
+        elif not pose_print_latched:
+            pose_print_latched = True
+            if rover.arm is not None:
+                try:
+                    pose = rover.arm.sync_from_servos()
+                    print(
+                        "GRID_POSE=(%.1f, %.1f, %.1f, %.1f)"
+                        % (
+                            pose["roll_deg"],
+                            pose["pitch1_deg"],
+                            pose["pitch2_deg"],
+                            pose["pitch3_deg"],
+                        )
+                    )
+                except ArmKinematicsError as err:
+                    print_arm_error(err)
+
+        # 手动模式下保留旧的相机目标追踪；自动模式中相机固定到标定角度。
+        if not button_pressed(buttons, ps2.PS2_BTN_L2):
+            handle_camera_tracking(rover, data, tracking_state)
 
         up_pressed = button_pressed(buttons, ps2.PS2_BTN_UP)
         if not up_pressed:
