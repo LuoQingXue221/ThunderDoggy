@@ -23,6 +23,10 @@ _MAX_MOTOR_RAD_S = MAX_MOTOR_RPM * 2.0 * math.pi / 60.0
 _MAX_PIVOT_RAD_S = _MAX_MOTOR_RAD_S * PIVOT_SPEED_SCALE
 _ARM_JOG_COMMAND_DELAY_MS = 50
 _ARM_JOG_STEP_DEG = 8
+_ARM_UP_TARGET_POSE_DEG = (0.0, 80.0, -110.0, 30.0)
+_ARM_HOME_MOVE_WAIT_MS = 5000
+_ARM_TARGET_MOVE_WAIT_MS = 1000
+_ARM_TARGET_HOLD_MS = 3000
 _last_arm_error_key = None
 _last_arm_error_ms = 0
 
@@ -104,6 +108,31 @@ def sync_arm_control_state(rover):
         return False
     return True
 
+
+def run_arm_up_sequence(rover):
+    """回初始位，移动到目标姿态，停留 3 秒后再次回到初始位。"""
+    rover.stop()
+    if rover.arm is None:
+        print("UP：机械臂未初始化，动作取消。")
+        return
+
+    try:
+        # 初始姿态：(Roll, Pitch1, Pitch2, Pitch3) = (0, 50, -140, 0)
+        rover.arm.apply_initial_pose()
+        time.sleep_ms(_ARM_HOME_MOVE_WAIT_MS)
+
+        # Roll 不变，其余三个关节相对初始姿态均增加 30 度。
+        rover.servo_control.set_arm_joint_angles(*_ARM_UP_TARGET_POSE_DEG)
+        time.sleep_ms(_ARM_TARGET_MOVE_WAIT_MS)
+
+        # 到达目标位置后停留 3 秒。
+        time.sleep_ms(_ARM_TARGET_HOLD_MS)
+
+        rover.arm.apply_initial_pose()
+        time.sleep_ms(_ARM_TARGET_MOVE_WAIT_MS)
+    except ArmKinematicsError as err:
+        print_arm_error(err)
+
 # ==============================================================================
 # 机械臂控制模式（处理传进来的摇杆数据）
 # ==============================================================================
@@ -184,8 +213,9 @@ def handle_arm_control(rover, ps2, buttons, lx, ly, rx, ry):
 # 主循环控制：演示如何从底层获取摇杆信息
 # ==============================================================================
 def ps2_loop(rover, ps2, data, serial):
-    print("PS2 控制：X失能，三角使能，R1停车，R2+右摇杆左右原地转向，L2+O机械臂回初始位并相机回0，L2+方向键左右控制相机，上下控制Pitch3，L2+左摇杆前后控制Pitch2，右摇杆前后控制Pitch1，右摇杆左右控制Roll。")
+    print("PS2 控制：X失能，三角使能，R1停车，UP执行机械臂自动动作，R2+右摇杆左右原地转向，L2+O机械臂回初始位并相机回0，L2+方向键左右控制相机，上下控制Pitch3，L2+左摇杆前后控制Pitch2，右摇杆前后控制Pitch1，右摇杆左右控制Roll。")
     arm_mode_active = False
+    up_button_latched = False
     
     while True:
         # 【第一步：触发底层更新】要求底层库发起一次 SPI 通信，读取手柄当前状态
@@ -273,6 +303,17 @@ def ps2_loop(rover, ps2, data, serial):
             arm_mode_active = False
             time.sleep_ms(200)
             continue
+
+        up_pressed = button_pressed(buttons, ps2.PS2_BTN_UP)
+        if not up_pressed:
+            up_button_latched = False
+        elif not up_button_latched:
+            up_button_latched = True
+            # L2+UP 继续用于原有的 Pitch3 手动点动；单独按 UP 才执行自动动作。
+            if not button_pressed(buttons, ps2.PS2_BTN_L2):
+                arm_mode_active = False
+                run_arm_up_sequence(rover)
+                continue
 
         # L2 按住时，进入机械臂模式
         if button_pressed(buttons, ps2.PS2_BTN_L2):
