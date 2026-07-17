@@ -23,6 +23,15 @@ _MAX_MOTOR_RAD_S = MAX_MOTOR_RPM * 2.0 * math.pi / 60.0
 _MAX_PIVOT_RAD_S = _MAX_MOTOR_RAD_S * PIVOT_SPEED_SCALE
 _ARM_JOG_COMMAND_DELAY_MS = 50
 _ARM_JOG_STEP_DEG = 8
+
+# 单独按下十字键 UP 时使用的机械臂演示姿态，可按需要修改这四个角度。
+_ARM_DEMO_ROLL_DEG = 30.0
+_ARM_DEMO_PITCH1_DEG = 30.0
+_ARM_DEMO_PITCH2_DEG = -110.0
+_ARM_DEMO_PITCH3_DEG = 20.0
+_ARM_POSE_SETTLE_MS = 2000
+_ARM_DEMO_HOLD_MS = 3000
+
 _last_arm_error_key = None
 _last_arm_error_ms = 0
 
@@ -45,7 +54,7 @@ def map_joystick(raw_val, center=128, deadzone=12):
     # 2. 死区过滤：如果偏移量在死区范围内，说明没有有效拨动，直接返回 0
     if abs(offset) <= deadzone:
         return 0
-        
+
     # 3. 确定方向：正向推为 1，反向拉为 -1
     sign = 1 if offset > 0 else -1
     
@@ -103,6 +112,33 @@ def sync_arm_control_state(rover):
         print_arm_error(err)
         return False
     return True
+
+
+def run_arm_pose_demo(rover):
+    """机械臂回初始位，再到自定义姿态，保持 3 秒后回初始位。"""
+    if rover.arm is None:
+        print("机械臂未初始化，无法执行姿态演示。")
+        return
+
+    rover.stop()
+    try:
+        # 先回初始位，并等待舵机运动完成，避免下一条指令立即覆盖它。
+        rover.arm.apply_initial_pose()
+        time.sleep_ms(_ARM_POSE_SETTLE_MS)
+
+        # jog_joints 使用相对角度，因此用目标角减去当前（初始）角度。
+        rover.arm.jog_joints(
+            roll_delta_deg=_ARM_DEMO_ROLL_DEG - rover.arm.roll_deg,
+            pitch1_delta_deg=_ARM_DEMO_PITCH1_DEG - rover.arm.pitch1_deg,
+            pitch2_delta_deg=_ARM_DEMO_PITCH2_DEG - rover.arm.pitch2_deg,
+            pitch3_delta_deg=_ARM_DEMO_PITCH3_DEG - rover.arm.pitch3_deg,
+        )
+        time.sleep_ms(_ARM_DEMO_HOLD_MS)
+
+        rover.arm.apply_initial_pose()
+        time.sleep_ms(_ARM_POSE_SETTLE_MS)
+    except ArmKinematicsError as err:
+        print_arm_error(err)
 
 # ==============================================================================
 # 机械臂控制模式（处理传进来的摇杆数据）
@@ -272,6 +308,14 @@ def ps2_loop(rover, ps2, data, serial):
             rover.enable_motors()
             arm_mode_active = False
             time.sleep_ms(200)
+            continue
+
+        # 单独按下 UP：执行机械臂固定姿态演示。
+        # 排除 L2 + UP，保留机械臂模式下用 UP 点动 Pitch3 的原功能。
+        if (button_pressed(buttons, ps2.PS2_BTN_UP) and
+                not button_pressed(buttons, ps2.PS2_BTN_L2)):
+            arm_mode_active = False
+            run_arm_pose_demo(rover)
             continue
 
         # L2 按住时，进入机械臂模式
