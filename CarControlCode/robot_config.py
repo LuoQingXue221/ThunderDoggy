@@ -96,9 +96,9 @@ STEER_ANGLE_MIN_DEG = -90.0
 """六个底盘转向舵机允许的最小逻辑角度，单位度。"""
 STEER_ANGLE_MAX_DEG = 90.0
 """六个底盘转向舵机允许的最大逻辑角度，单位度。"""
-CAMERA_ANGLE_MIN_DEG = -90.0
+CAMERA_ANGLE_MIN_DEG =0
 """相机舵机允许的最小逻辑角度，单位度；设置目标角时会裁剪到此下限。"""
-CAMERA_ANGLE_MAX_DEG = 0.0
+CAMERA_ANGLE_MAX_DEG = 90.0
 """相机舵机允许的最大逻辑角度，单位度；当前 0 度为上限。"""
 
 # 视觉水平对准参数：MaixCAM发送dx像素误差，车控按比例小步调整相机舵机。
