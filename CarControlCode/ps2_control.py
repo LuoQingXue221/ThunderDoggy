@@ -16,18 +16,22 @@ ps2_lib.py 只负责手柄底层读取和安全接收。
   ○          → 放松夹爪
   ×          → 急停（失能电机）
   △          → 使能电机
+  START      → 启动/取消视觉自动任务
+  R3         → 打印九宫格标定姿态
   L3 + R3    → 全部舵机复位
   SELECT     → 退出 PS2 控制
 
 作者 王笑
 日期 20260528
 更新 20260717 — 重写键位映射
+更新 20260719 — 合入视觉自动任务，保留原键位逻辑
 """
 
 import math
 import time
 
 from arm_control import ArmKinematicsError
+from autonomous_control import AutonomousController
 from robot_config import (
     MAX_MOTOR_RPM,
     PIVOT_SPEED_SCALE,
@@ -131,10 +135,28 @@ def _set_gripper_angle(rover, delta):
         rover.servo_control.set_reserve_servo_angle(
             _GRIPPER_SERVO_ID, _gripper_angle_deg,
         )
-    else:
-        if not _gripper_warned:
-            print("夹爪未启用，请在 robot_config.py 中设置 RESERVE_SERVO_ENABLED = True")
-            _gripper_warned = True
+    elif not _gripper_warned:
+        print("夹爪未启用，请在 robot_config.py 中设置 RESERVE_SERVO_ENABLED = True")
+        _gripper_warned = True
+
+
+def _print_grid_pose(rover):
+    """打印当前四关节绝对角度，供九宫格 hover/touch 标定使用。"""
+    if rover.arm is None:
+        return
+    try:
+        pose = rover.arm.sync_from_servos()
+        print(
+            "GRID_POSE=(%.1f, %.1f, %.1f, %.1f)"
+            % (
+                pose["roll_deg"],
+                pose["pitch1_deg"],
+                pose["pitch2_deg"],
+                pose["pitch3_deg"],
+            )
+        )
+    except ArmKinematicsError as err:
+        print_arm_error(err)
 
 
 # ==============================================================================
@@ -147,49 +169,30 @@ def ps2_loop(rover, ps2, data, serial):
     print("  左摇杆=平移  右摇杆Y=底盘旋转  右摇杆X=相机")
     print("  十字键左右=Roll  十字键上下=Pitch1(45kg)")
     print("  L1/L2=Pitch2  R1/R2=Pitch3")
-    print("  □收紧夹爪  ○放松夹爪  ×急停  △使能  SELECT退出  L3+R3复位")
+    print("  □收紧夹爪  ○放松夹爪  ×急停  △使能")
+    print("  START=视觉自动任务  R3=打印标定姿态  SELECT=退出  L3+R3=复位")
+
+    auto = AutonomousController(rover, serial)
+    start_button_latched = False
+    pose_print_latched = False
 
     while True:
         # 【第一步：触发底层更新】
         ps2.update()
 
-        # 【第二步：处理相机串口数据】
-        serial_data = data["value"]
-        if serial_data is not None:
-            serial.write("ok")
-            code_data = serial_data.split()
-            if len(code_data) == 6:
-                color1, color2, color3, num1_str, num2_str, num3_str = code_data
-                try:
-                    num1 = int(num1_str)
-                    num2 = int(num2_str)
-                    num3 = int(num3_str)
-
-                    targets = [
-                        {"color": color1, "position": 1, "count": num1},
-                        {"color": color2, "position": 2, "count": num2},
-                        {"color": color3, "position": 3, "count": num3}
-                    ]
-
-                    print("数据解析成功！目标信息如下：")
-                    for target in targets:
-                        print(f"位置 {target['position']}: 颜色为 {target['color']}, 数量为 {target['count']}")
-                except ValueError:
-                    print("错误：数量数据包含非数字字符，放弃当前帧。")
-            else:
-                print(f"警告：数据长度异常，期望6位，实际{len(camera_data)}位。原始数据: {camera_data}")
-            data["value"] = None
-
-        # 【第三步：获取手柄快照】
+        # 【第二步：获取手柄快照】
         # fresh: 数据是否有效（布尔值）
         # buttons: 按键状态码
         # lx / ly: 左摇杆 X / Y 轴原始值 (0-255)
         # rx / ry: 右摇杆 X / Y 轴原始值 (0-255)
         fresh, buttons, lx_raw, ly_raw, rx_raw, ry_raw, _ = ps2.snapshot()
 
-        # 数据无效 → 停车
+        # 数据无效 → 停车并取消自动任务
         if not fresh:
-            rover.stop()
+            if auto.active:
+                auto.cancel("ps2_lost")
+            else:
+                rover.stop()
             continue
 
         # ======================================================================
@@ -198,6 +201,7 @@ def ps2_loop(rover, ps2, data, serial):
 
         # SELECT：退出控制
         if button_pressed(buttons, ps2.PS2_BTN_SELECT):
+            auto.cancel("select_exit")
             rover.stop()
             print("SELECT：退出 PS2 控制。")
             break
@@ -205,6 +209,7 @@ def ps2_loop(rover, ps2, data, serial):
         # L3 + R3：全部复位
         if (button_pressed(buttons, ps2.PS2_BTN_L3) and
                 button_pressed(buttons, ps2.PS2_BTN_R3)):
+            auto.cancel("servo_reset")
             rover.stop()
             if rover.arm is not None:
                 try:
@@ -222,8 +227,9 @@ def ps2_loop(rover, ps2, data, serial):
             time.sleep_ms(500)
             continue
 
-        # ×：急停（失能电机）
+        # ×：急停（取消自动任务并失能电机）
         if button_pressed(buttons, ps2.PS2_BTN_CROSS):
+            auto.cancel("motor_disable")
             rover.disable()
             time.sleep_ms(200)
             continue
@@ -233,6 +239,33 @@ def ps2_loop(rover, ps2, data, serial):
             rover.enable_motors()
             time.sleep_ms(200)
             continue
+
+        # START：启动/取消视觉自动任务（原 main 键位中未占用）
+        start_pressed = button_pressed(buttons, ps2.PS2_BTN_START)
+        if not start_pressed:
+            start_button_latched = False
+        elif not start_button_latched:
+            start_button_latched = True
+            if auto.active:
+                auto.cancel("ps2_start_toggle")
+            else:
+                auto.start(data)
+            time.sleep_ms(120)
+            continue
+
+        # 自动任务接管期间不下发人工摇杆和关节命令。
+        if auto.active:
+            auto.update(data)
+            time.sleep_ms(20)
+            continue
+
+        # R3：打印当前九宫格标定姿态；L3+R3 的复位逻辑优先。
+        pose_print_pressed = button_pressed(buttons, ps2.PS2_BTN_R3)
+        if not pose_print_pressed:
+            pose_print_latched = False
+        elif not pose_print_latched:
+            pose_print_latched = True
+            _print_grid_pose(rover)
 
         # ======================================================================
         # 夹爪控制
