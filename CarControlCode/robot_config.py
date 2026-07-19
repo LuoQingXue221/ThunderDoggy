@@ -96,10 +96,24 @@ STEER_ANGLE_MIN_DEG = -90.0
 """六个底盘转向舵机允许的最小逻辑角度，单位度。"""
 STEER_ANGLE_MAX_DEG = 90.0
 """六个底盘转向舵机允许的最大逻辑角度，单位度。"""
-CAMERA_ANGLE_MIN_DEG = -90.0
+CAMERA_ANGLE_MIN_DEG =0
 """相机舵机允许的最小逻辑角度，单位度；设置目标角时会裁剪到此下限。"""
-CAMERA_ANGLE_MAX_DEG = 0.0
+CAMERA_ANGLE_MAX_DEG = 90.0
 """相机舵机允许的最大逻辑角度，单位度；当前 0 度为上限。"""
+
+# 视觉水平对准参数：MaixCAM发送dx像素误差，车控按比例小步调整相机舵机。
+CAMERA_TRACK_ENABLED = True
+"""是否允许视觉结果自动控制相机水平舵机。"""
+CAMERA_TRACK_DEADZONE_PX = 15
+"""目标中心距离画面中心不超过该像素数时停止转动。"""
+CAMERA_TRACK_KP_DEG_PER_PX = 0.025
+"""水平像素误差换算为单次舵机角度增量的比例。"""
+CAMERA_TRACK_MAX_STEP_DEG = 3.0
+"""每条视觉消息允许的最大角度变化，防止舵机突然大幅转动。"""
+CAMERA_TRACK_DIRECTION = -1.0
+"""dx>0表示目标在画面右侧；现有手动映射中向右为角度减小，所以为-1。"""
+CAMERA_TRACK_SPEED_DEG_S = 40.0
+"""视觉对准时的相机舵机速度。"""
 ARM_ROLL_MIN_DEG = -180.0
 """机械臂 Roll 关节允许的最小逻辑角度，单位度。"""
 ARM_ROLL_MAX_DEG = 180.0
@@ -133,4 +147,79 @@ ARM_INIT_PITCH2_DEG = -140.0
 """机械臂回初始姿态时 Pitch2 关节的目标逻辑角度，单位度。"""
 ARM_INIT_PITCH3_DEG = 0.0
 """机械臂回初始姿态时 Pitch3 关节的目标逻辑角度，单位度。"""
+
+
+# =============================================================================
+# 自动巡线、直角转弯和九宫格停车
+# =============================================================================
+
+AUTO_LINE_SPEED_RAD_S = 0.8
+"""自动直线巡线轮速。刻意低于原示例2.0 rad/s，实车仍需测试最低稳定速度。"""
+AUTO_DOCK_SPEED_RAD_S = 0.35
+"""九宫格前后微调轮速，只允许极低速。"""
+AUTO_PIVOT_SPEED_RAD_S = 0.45
+"""直角原地转向轮速，正右负左。"""
+AUTO_DRIVE_ACC_RAD_S2 = 3.0
+"""自动模式加速度，独立于PS2手动模式的20 rad/s^2。"""
+AUTO_LINE_KP_DEG_PER_PX = 0.08
+"""线路水平像素误差换算为底盘转向角的比例。"""
+AUTO_LINE_MAX_STEER_DEG = 22.0
+"""低速巡线最大转向角；直角不依赖该角度，而是停车后原地旋转。"""
+AUTO_LINE_MIN_CONFIDENCE = 12
+"""低于该视觉置信度立即停车。"""
+AUTO_LINE_COMMAND_TIMEOUT_MS = 450
+"""超过该时间没有新线路帧时立即停车。"""
+AUTO_TURN_TIMEOUT_MS = 6500
+"""原地转向最长持续时间，超时强制停车。"""
+AUTO_DOCK_X_DEADZONE_PX = 20
+"""白纸中心水平对位死区。"""
+AUTO_DOCK_RANGE_DEADZONE_PX = 14
+"""白纸表观高度误差死区。"""
+AUTO_CAMERA_FORWARD_ANGLE_DEG = 0.0
+"""巡线与九宫格固定标定时的相机角度；现场确认后只改此处。"""
+
+# 原始视觉量换算参数；所有像素阈值统一折算到640×480后再比较。
+AUTO_CORNER_CONFIRM_OBSERVATIONS = 3
+AUTO_CORNER_SIDE_MIN_PIXELS = 100
+AUTO_CORNER_SIDE_RATIO_X100 = 135
+AUTO_LINE_ALIGN_DEADZONE_PX = 22
+AUTO_TURN_MIN_MS = 400
+AUTO_TURN_ALIGNED_OBSERVATIONS = 4
+AUTO_GRID_ENTRY_HEIGHT_PX_480 = 105
+AUTO_GRID_DOCK_TARGET_HEIGHT_PX_480 = 260
+AUTO_GRID_DOCK_STABLE_OBSERVATIONS = 5
+AUTO_GRID_SETTLE_MS = 500
+AUTO_GRID_LAYOUT_STABLE_OBSERVATIONS = 3
+AUTO_GRID_TARGET_TIMEOUT_MS = 6000
+AUTO_BOARD_TIMEOUT_MS = 1500
+
+
+# =============================================================================
+# 九宫格固定机械臂动作表
+# =============================================================================
+
+ARM_GRID_CALIBRATED = False
+"""九个格子的关节角全部实测填好后才能改True；False时拒绝驱动机械臂。"""
+ARM_GRID_ACTION_MODE = "touch"
+"""当前机械爪未安装，使用touch：悬停->轻触顶面->收回。"""
+ARM_GRID_MOVE_SPEED_DEG_S = 20.0
+"""自动机械臂动作速度，保持低速。"""
+ARM_GRID_HOME_WAIT_MS = 1800
+ARM_GRID_HOVER_WAIT_MS = 1200
+ARM_GRID_TOUCH_WAIT_MS = 700
+
+# 每一项都必须填写四关节绝对角度：(Roll, Pitch1, Pitch2, Pitch3)。
+# row=0是画面上方远处，row=2是画面下方近处；column=0/1/2为左/中/右。
+# 在九格实测完成之前保持None，程序会通过@GRAB_FAIL明确报告“uncalibrated”。
+ARM_GRID_POSES = {
+    (0, 0): {"hover": None, "touch": None},
+    (0, 1): {"hover": None, "touch": None},
+    (0, 2): {"hover": None, "touch": None},
+    (1, 0): {"hover": None, "touch": None},
+    (1, 1): {"hover": None, "touch": None},
+    (1, 2): {"hover": None, "touch": None},
+    (2, 0): {"hover": None, "touch": None},
+    (2, 1): {"hover": None, "touch": None},
+    (2, 2): {"hover": None, "touch": None},
+}
 

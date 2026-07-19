@@ -6,6 +6,7 @@
 
 常用学生接口：
 - apply_initial_pose()
+- move_to_pose(roll_deg, pitch1_deg, pitch2_deg, pitch3_deg, speed_deg_s)
 - jog_joints(roll_delta_deg=0, pitch1_delta_deg=0, pitch2_delta_deg=0, pitch3_delta_deg=0)
 - jog_camera(delta_deg)
 
@@ -92,6 +93,21 @@ class RobotArm:
             ARM_INIT_PITCH1_DEG,
             ARM_INIT_PITCH2_DEG,
             ARM_INIT_PITCH3_DEG,
+            speed_deg_s=speed_deg_s,
+        )
+
+    def move_to_pose(self, roll_deg, pitch1_deg, pitch2_deg, pitch3_deg,
+                     speed_deg_s=ARM_SERVO_SPEED_DEG_S):
+        """移动到四关节绝对姿态；固定动作越界时拒绝执行而不是静默裁剪。"""
+        self._require_range("roll", roll_deg, ARM_ROLL_MIN_DEG, ARM_ROLL_MAX_DEG)
+        self._require_range("pitch1", pitch1_deg, ARM_PITCH1_MIN_DEG, ARM_PITCH1_MAX_DEG)
+        self._require_range("pitch2", pitch2_deg, ARM_PITCH2_MIN_DEG, ARM_PITCH2_MAX_DEG)
+        self._require_range("pitch3", pitch3_deg, ARM_PITCH3_MIN_DEG, ARM_PITCH3_MAX_DEG)
+        return self._move_to_joint_pose(
+            roll_deg,
+            pitch1_deg,
+            pitch2_deg,
+            pitch3_deg,
             speed_deg_s=speed_deg_s,
         )
 

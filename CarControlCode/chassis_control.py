@@ -159,7 +159,8 @@ class LunarRover:
             time.sleep_ms(20)
 
     def drive(self, speed_rad_s, steer_angle_deg,
-              steer_speed_deg_s=_STEER_SERVO_SPEED_DEG_S):
+              steer_speed_deg_s=_STEER_SERVO_SPEED_DEG_S,
+              acc_rad_s2=DEFAULT_ACC_RAD_S2):
         """
         speed_rad_s：期望车轮角速度，单位 rad/s，正数前进，负数后退。
         steer_angle_deg：期望底盘转向角，单位 deg。
@@ -182,12 +183,13 @@ class LunarRover:
         for wheel in _DRIVE_WHEELS:
             motor_id = wheel["motor_id"]
             speed = motor_speed * wheel.get("direction", 1)
-            self._set_motor_acc_cached(motor_id, DEFAULT_ACC_RAD_S2)
+            self._set_motor_acc_cached(motor_id, acc_rad_s2)
             self._set_motor_speed_cached(motor_id, speed)
         self._motors_stopped = abs(motor_speed) < 0.01
 
     def pivot_turn(self, speed_rad_s,
-                   steer_speed_deg_s=_STEER_SERVO_SPEED_DEG_S):
+                   steer_speed_deg_s=_STEER_SERVO_SPEED_DEG_S,
+                   acc_rad_s2=DEFAULT_ACC_RAD_S2):
         """
         原地转向：speed_rad_s 为原地转向轮速，负数左转，正数右转。
         """
@@ -224,6 +226,6 @@ class LunarRover:
             motor_id = wheel["motor_id"]
             side_speed = left_cmd if wheel["y"] > 0 else right_cmd
             speed = side_speed * wheel.get("direction", 1)
-            self._set_motor_acc_cached(motor_id, DEFAULT_ACC_RAD_S2)
+            self._set_motor_acc_cached(motor_id, acc_rad_s2)
             self._set_motor_speed_cached(motor_id, speed)
         self._motors_stopped = False
