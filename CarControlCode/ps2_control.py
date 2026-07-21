@@ -11,8 +11,7 @@ ps2_lib.py 只负责手柄底层读取和安全接收。
   十字键左右 → Roll 舵机
   十字键上下 → Pitch1（45 kg 舵机）
   L1          → Pitch2 上
-  L1 + L2     → Pitch2 下
-  L2          → 九色块外框自动对正
+  L2          → Pitch2 下
   R1 / R2    → Pitch3 上下
   □          → 收紧夹爪
   ○          → 放松夹爪
@@ -34,10 +33,9 @@ import math
 import time
 
 from arm_control import ArmKinematicsError
-from autonomous_control import AutonomousController
+from autonomous_control import AutonomousController, describe_reason
 from robot_config import (
-    AUTO_BOARD_COMMAND_TIMEOUT_MS,
-    AUTO_GRID_DOCK_TARGET_HEIGHT_PX_480,
+    CAMERA_MANUAL_ANGLE_DEG,
     MAX_MOTOR_RPM,
     PIVOT_SPEED_SCALE,
     RESERVE_SERVO_ENABLED,
@@ -168,27 +166,7 @@ def _print_calibration_snapshot(rover, data, serial=None):
         serial.write(b"@CALIBRATE_GRID\n")
         print("GRID_CAL：已通知相机采集30个稳定帧，请保持车辆和九宫格静止。")
 
-    board_packet = data.get("board")
-    if (not board_packet or board_packet.get("value") is None or
-            ticks_diff(ticks_ms(), board_packet.get("rx_ms", 0)) >
-            AUTO_BOARD_COMMAND_TIMEOUT_MS):
-        print("BOARD_CAL: unavailable（白纸未识别或数据已过期）")
-        return
-
-    frame_h = max(1, int(board_packet.get("frame_h", 480)))
-    raw_height = int(board_packet["value"]["h"])
-    height_480 = raw_height * 480 // frame_h
-    print(
-        "BOARD_CAL: height_480=%d, current_target=%d, "
-        "suggested_target=%d, raw_height=%d/%d"
-        % (
-            height_480,
-            AUTO_GRID_DOCK_TARGET_HEIGHT_PX_480,
-            height_480,
-            raw_height,
-            frame_h,
-        )
-    )
+    # 九宫格标定结果由相机完成 30 帧采样后经 UART0 返回；不再输出旧白纸标定状态。
 
 # ==============================================================================
 # 主循环控制
@@ -199,7 +177,7 @@ def ps2_loop(rover, ps2, data, serial):
     print("PS2 控制：")
     print("  左摇杆=平移  右摇杆Y=底盘旋转  右摇杆X=相机")
     print("  十字键左右=Roll  十字键上下=Pitch1(45kg)")
-    print("  L1=Pitch2上  L1+L2=Pitch2下  L2=九色块外框自动对正  R1/R2=Pitch3")
+    print("  L1=Pitch2上  L2=Pitch2下  L1+L2=保持  R1/R2=Pitch3")
     print("  □收紧夹爪  ○放松夹爪  ×急停  △使能")
     print("  START=完整自动  L3=对正/任务轻触  R3=打印标定姿态")
     print("  SELECT=退出  L3+R3=复位")
@@ -207,7 +185,6 @@ def ps2_loop(rover, ps2, data, serial):
     auto = AutonomousController(rover, serial)
     start_button_latched = False
     dock_button_latched = False
-    ground_align_button_latched = False
     pose_print_latched = False
 
     if rover.arm is not None:
@@ -260,10 +237,8 @@ def ps2_loop(rover, ps2, data, serial):
                     rover.arm.apply_initial_pose()
                 except ArmKinematicsError as err:
                     print_arm_error(err)
-                try:
-                    rover.arm.jog_camera(-rover.arm.camera_angle_deg)
-                except ArmKinematicsError as err:
-                    print_arm_error(err)
+                rover.servo_control.set_camera_angle(CAMERA_MANUAL_ANGLE_DEG)
+                rover.arm.camera_angle_deg = CAMERA_MANUAL_ANGLE_DEG
             rover.center_chassis_servos()
             _gripper_angle_deg = 0.0
             _set_gripper_angle(rover, 0.0)
@@ -306,28 +281,7 @@ def ps2_loop(rover, ps2, data, serial):
                 elif not ok and reason == "qr_task_missing":
                     print("START拒绝：请先让相机识别二维码并等待任务确认。")
                 elif not ok:
-                    print("START完整自动拒绝:", reason)
-            time.sleep_ms(120)
-            continue
-
-        # L2：低速九色块外框自动对正。占用 L2 单键，Pitch2 下调改为 L1+L2。
-        ground_align_pressed = (button_pressed(buttons, ps2.PS2_BTN_L2) and
-                                not button_pressed(buttons, ps2.PS2_BTN_L1))
-        if not ground_align_pressed:
-            ground_align_button_latched = False
-        elif not ground_align_button_latched:
-            ground_align_button_latched = True
-            if auto.active:
-                if auto.session == "ground_align":
-                    auto.cancel("ps2_l2_toggle")
-                else:
-                    print("其他自动流程进行中，请先按对应按键取消。")
-            else:
-                ok, reason = auto.start_ground_align(data)
-                if not ok and reason == "motors_disabled":
-                    print("L2 自动对正拒绝：底盘电机已失能，请先按 △ 使能。")
-                elif not ok:
-                    print("L2 自动对正拒绝:", reason)
+                    print("START完整自动拒绝：", describe_reason(reason))
             time.sleep_ms(120)
             continue
 
@@ -347,7 +301,7 @@ def ps2_loop(rover, ps2, data, serial):
                 if not ok and reason == "motors_disabled":
                     print("L3局部自动拒绝：底盘电机已失能，请先按 △ 使能。")
                 elif not ok:
-                    print("L3局部自动拒绝:", reason)
+                    print("L3局部自动拒绝：", describe_reason(reason))
             time.sleep_ms(120)
             continue
 
@@ -393,10 +347,11 @@ def ps2_loop(rover, ps2, data, serial):
         if button_pressed(buttons, ps2.PS2_BTN_DOWN):
             pitch1_delta -= _ARM_JOG_STEP_DEG
 
-        # L1 → Pitch2 上；L1 + L2 → Pitch2 下（L2 单键留给自动对正）。
+        # L1 / L2 分别上下点动；同时按下时增量相互抵消。
         if button_pressed(buttons, ps2.PS2_BTN_L1):
-            pitch2_delta += (-_ARM_JOG_STEP_DEG if button_pressed(buttons, ps2.PS2_BTN_L2)
-                             else _ARM_JOG_STEP_DEG)
+            pitch2_delta += _ARM_JOG_STEP_DEG
+        if button_pressed(buttons, ps2.PS2_BTN_L2):
+            pitch2_delta -= _ARM_JOG_STEP_DEG
 
         # R1 / R2 → Pitch3
         if button_pressed(buttons, ps2.PS2_BTN_R1):

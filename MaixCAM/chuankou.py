@@ -49,6 +49,10 @@ class VisionSerial:
     def send_qr(self, sequence, text):
         return self.send(["@QR_RAW", sequence, str(text).replace(",", " ")])
 
+    def send_grid_reference(self, values):
+        """把标定中位数送回 ESP32，再由 ESP32 USB 串口转发给电脑。"""
+        return self.send(["@GRID_REFERENCE"] + list(values))
+
     def read_lines(self):
         data = self.uart.read()
         if data:

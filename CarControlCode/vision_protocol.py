@@ -3,7 +3,6 @@
 import time
 
 VALID_COLORS = ("red", "yellow", "blue", "pink", "purple")
-_BLOCK_LOG_QUANTUM_PX = 8
 
 
 def _now():
@@ -151,24 +150,8 @@ def vision_link_timed_out(data, timeout_ms, now=None):
     return _ticks_diff(now, reference) > int(timeout_ms)
 
 
-def blocks_log_signature(packet):
-    """生成抗轻微像素抖动的色块日志签名，避免终端重复刷屏。"""
-    if packet is None:
-        return ()
-    return tuple(
-        (
-            item["color"],
-            item["cx"] // _BLOCK_LOG_QUANTUM_PX,
-            item["cy"] // _BLOCK_LOG_QUANTUM_PX,
-            item["w"] // _BLOCK_LOG_QUANTUM_PX,
-            item["h"] // _BLOCK_LOG_QUANTUM_PX,
-        )
-        for item in packet.get("items", ())
-    )
-
-
 def format_recognition_result(message):
-    """把二维码或色块原始识别结果格式化为 ESP32 终端日志。"""
+    """仅格式化二维码结果；色块帧只缓存，不输出终端日志。"""
     if message is None:
         return None
     kind, value = message
@@ -176,20 +159,4 @@ def format_recognition_result(message):
         return "视觉二维码识别: seq=%d, payload=%s" % (
             value["sequence"], value["payload"],
         )
-    if kind != "blocks":
-        return None
-    items = value.get("items", ())
-    if not items:
-        return "视觉色块识别: seq=%d, count=0（色块已消失）" % value["sequence"]
-    details = []
-    for item in items:
-        details.append(
-            "%s center=(%d,%d) size=%dx%d pixels=%d"
-            % (
-                item["color"], item["cx"], item["cy"],
-                item["w"], item["h"], item["pixels"],
-            )
-        )
-    return "视觉色块识别: seq=%d, count=%d, %s" % (
-        value["sequence"], len(items), "; ".join(details),
-    )
+    return None

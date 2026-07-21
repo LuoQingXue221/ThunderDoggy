@@ -10,7 +10,7 @@ from robot_config import (
     ARM_INIT_PITCH1_DEG, ARM_INIT_PITCH2_DEG, ARM_INIT_PITCH3_DEG,
     ARM_INIT_ROLL_DEG, AUTO_BOARD_ACQUIRE_TIMEOUT_MS,
     AUTO_BOARD_COMMAND_TIMEOUT_MS, AUTO_BOARD_TIMEOUT_MS,
-    AUTO_CAMERA_FORWARD_ANGLE_DEG, AUTO_CAMERA_SETTLE_OBSERVATIONS,
+    AUTO_CAMERA_SETTLE_OBSERVATIONS,
     AUTO_CAMERA_SETTLE_TIMEOUT_MS, AUTO_CAMERA_SETTLE_TOLERANCE_DEG,
     AUTO_CAMERA_VERIFY_INTERVAL_MS,
     AUTO_CORNER_CONFIRM_OBSERVATIONS, AUTO_CORNER_SIDE_MIN_PIXELS,
@@ -18,6 +18,12 @@ from robot_config import (
     AUTO_DOCK_SPEED_RAD_S, AUTO_DOCK_X_DEADZONE_PX, AUTO_DRIVE_ACC_RAD_S2,
     AUTO_GRID_DOCK_STABLE_OBSERVATIONS, AUTO_GRID_DOCK_TARGET_HEIGHT_PX_480,
     AUTO_GRID_ENTRY_HEIGHT_PX_480, AUTO_GRID_LAYOUT_STABLE_OBSERVATIONS,
+    AUTO_GRID_REFERENCE_ANGLE_X10, AUTO_GRID_REFERENCE_CX_PX_640,
+    AUTO_GRID_REFERENCE_CY_PX_480, AUTO_GRID_REFERENCE_HEIGHT_PX_480,
+    AUTO_GRID_REFERENCE_LEFT_RIGHT_X1000,
+    AUTO_GRID_REFERENCE_PERSPECTIVE_TOLERANCE_X1000,
+    AUTO_GRID_REFERENCE_SCALE_TOLERANCE_PERCENT,
+    AUTO_GRID_REFERENCE_TOP_BOTTOM_X1000, AUTO_GRID_REFERENCE_WIDTH_PX_640,
     AUTO_GRID_SETTLE_MS, AUTO_GRID_TARGET_TIMEOUT_MS,
     AUTO_GROUND_ALIGN_ANGLE_DEADZONE_X10, AUTO_GROUND_ALIGN_BOTTOM_DEADZONE_PX_480,
     AUTO_GROUND_ALIGN_CENTER_Y_DEADZONE_PX_480,
@@ -31,6 +37,7 @@ from robot_config import (
     AUTO_LINE_KP_DEG_PER_PX, AUTO_LINE_MAX_STEER_DEG,
     AUTO_LINE_MIN_CONFIDENCE, AUTO_LINE_SPEED_RAD_S, AUTO_PIVOT_SPEED_RAD_S,
     AUTO_TURN_ALIGNED_OBSERVATIONS, AUTO_TURN_MIN_MS, AUTO_TURN_TIMEOUT_MS,
+    CAMERA_MANUAL_ANGLE_DEG, CAMERA_VISION_ANGLE_DEG,
     clamp,
 )
 from vision_protocol import VALID_COLORS
@@ -46,6 +53,52 @@ def ticks_diff(a, b):
 
 def ticks_add(a, b):
     return time.ticks_add(a, int(b)) if hasattr(time, "ticks_add") else a + int(b)
+
+
+_REASON_TEXT = {
+    "ps2_lost": "手柄信号丢失", "select_exit": "操作员退出",
+    "servo_reset": "执行全部舵机复位", "motor_disable": "执行急停失能",
+    "ps2_start_toggle": "再次按下START", "ps2_l3_toggle": "再次按下L3",
+    "camera_settle_timeout": "相机舵机到位超时",
+    "board_not_detected_timeout": "九宫格检测超时",
+    "board_link_timeout": "九宫格数据通信超时", "ground_lost": "对正时九宫格丢失",
+    "ground_align_timeout": "九宫格自动对正超时", "ground_too_large": "九宫格距离过近",
+    "ground_angle_unavailable": "九宫格角度不可用", "turn_timeout": "原地转向超时",
+    "board_lost": "九宫格丢失", "grid_snapshot_missing": "冻结九宫格快照缺失",
+    "already_active": "已有自动流程正在运行", "motors_disabled": "底盘电机未使能",
+    "qr_task_missing": "尚未取得二维码任务", "arm_missing": "未连接机械臂",
+    "uncalibrated": "机械臂九宫格动作尚未标定", "pose_missing": "目标格位动作缺失",
+}
+_ARM_REASON_TEXT = {
+    "read_failed": "舵机角度读取失败", "state_unsynced": "机械臂角度尚未同步",
+    "joint_limit": "机械臂目标超出限位",
+}
+
+
+def describe_reason(reason):
+    if reason in _REASON_TEXT:
+        return _REASON_TEXT[reason]
+    if str(reason).startswith("target_missing_"):
+        return "冻结布局中缺少目标颜色：%s" % str(reason)[15:]
+    if str(reason).startswith("arm_"):
+        detail = str(reason)[4:]
+        return "机械臂执行失败：%s" % _ARM_REASON_TEXT.get(detail, detail)
+    return str(reason)
+
+
+def _action_text(action):
+    values = {
+        "pivot_right": "向右原地旋转", "pivot_left": "向左原地旋转",
+        "right": "向右平移", "left": "向左平移",
+        "scale_forward": "向前调整距离", "scale_backward": "向后调整距离",
+        "center_forward": "向前对齐中心", "center_backward": "向后对齐中心",
+        "backward_for_margin": "后退以保留画面边距",
+        "perspective_unstable": "等待透视稳定", "stable": "位置稳定",
+        "backward": "后退", "forward": "前进",
+    }
+    if str(action).startswith("search_backward_"):
+        return "后退搜索（已见%s块）" % str(action).rsplit("_", 1)[-1]
+    return values.get(action, str(action))
 
 
 def parse_task(payload):
@@ -186,12 +239,48 @@ class VisionMath:
         target_y = board.get("center_y", -1) if complete else -1
         if target_x < 0 or target_y < 0:
             target_x, target_y = board["cx"], board["cy"]
+        def edge_length(a, b):
+            return int(math.sqrt((a[0] - b[0]) ** 2 +
+                                 (a[1] - b[1]) ** 2) + 0.5)
+
+        top = edge_length(corners[0], corners[1])
+        right = edge_length(corners[1], corners[2])
+        bottom_edge = edge_length(corners[3], corners[2])
+        left = edge_length(corners[0], corners[3])
+        width_640 = ((top + bottom_edge) * 320 // max(1, fw))
+        height_480 = ((left + right) * 240 // max(1, fh))
+        width_error = AUTO_GRID_REFERENCE_WIDTH_PX_640 - width_640
+        height_error = AUTO_GRID_REFERENCE_HEIGHT_PX_480 - height_480
+        width_as_height = width_error * AUTO_GRID_REFERENCE_HEIGHT_PX_480 // max(
+            1, AUTO_GRID_REFERENCE_WIDTH_PX_640)
+        range_error = (height_error + width_as_height) // 2
+        width_tolerance = max(1, AUTO_GRID_REFERENCE_WIDTH_PX_640 *
+                              AUTO_GRID_REFERENCE_SCALE_TOLERANCE_PERCENT // 100)
+        height_tolerance = max(1, AUTO_GRID_REFERENCE_HEIGHT_PX_480 *
+                               AUTO_GRID_REFERENCE_SCALE_TOLERANCE_PERCENT // 100)
+        top_bottom_x1000 = top * 1000 // max(1, bottom_edge)
+        left_right_x1000 = left * 1000 // max(1, right)
+        perspective_ok = (
+            abs(top_bottom_x1000 - AUTO_GRID_REFERENCE_TOP_BOTTOM_X1000) <=
+            AUTO_GRID_REFERENCE_PERSPECTIVE_TOLERANCE_X1000 and
+            abs(left_right_x1000 - AUTO_GRID_REFERENCE_LEFT_RIGHT_X1000) <=
+            AUTO_GRID_REFERENCE_PERSPECTIVE_TOLERANCE_X1000)
         return {
-            "dx": (target_x - fw // 2) * 640 // fw,
-            "center_dy": (fh // 2 - target_y) * 480 // fh,
+            "dx": (target_x * 640 // fw) - AUTO_GRID_REFERENCE_CX_PX_640,
+            "center_dy": AUTO_GRID_REFERENCE_CY_PX_480 - (target_y * 480 // fh),
             "bottom_error": (target_bottom - bottom) * 480 // fh,
             "angle_x10": board.get("angle_x10", 0),
+            "angle_error_x10": (board.get("angle_x10", 0) -
+                                  AUTO_GRID_REFERENCE_ANGLE_X10),
             "angle_valid": bool(board.get("angle_valid", False)),
+            "width_640": width_640, "height_480": height_480,
+            "width_error": width_error, "height_error": height_error,
+            "range_error": range_error,
+            "scale_ok": (abs(width_error) <= width_tolerance and
+                         abs(height_error) <= height_tolerance),
+            "top_bottom_x1000": top_bottom_x1000,
+            "left_right_x1000": left_right_x1000,
+            "perspective_ok": perspective_ok,
             "observed": board.get("observed", 9), "complete": complete,
             "contained": all(margin_x <= p[0] <= fw - margin_x and
                              margin_y <= p[1] <= fh - margin_y for p in corners),
@@ -231,6 +320,7 @@ class AutonomousController:
         self.active, self.mode, self.session = False, "idle", "idle"
         self.task, self.task_index, self.completed = (), 0, []
         self.cached_task, self.cached_qr_payload = (), ""
+        self.frozen_grid = ()
         self.last_qr_version = self.last_line_seq = self.last_grid_seq = -1
         self.corner, self.corner_count, self.aligned_count = "none", 0, 0
         self.turn_started = self.board_seen = self.deadline = 0
@@ -238,6 +328,7 @@ class AutonomousController:
         self.ground_stable = 0
         self.layout_key, self.target_missing_since, self.pending_cell = None, 0, None
         self.after_camera_mode, self.camera_check_at = "idle", 0
+        self.camera_target_angle = CAMERA_VISION_ANGLE_DEG
         self.camera_stable = 0
         self.board_message_seen = self.board_invalid_reported = False
         self.fault_reason = None
@@ -261,33 +352,49 @@ class AutonomousController:
         self.cached_task = task
         self.cached_qr_payload = raw.get("payload", "")
         print("二维码任务已缓存:", self.cached_task)
+        self.rover.servo_control.set_camera_angle(CAMERA_VISION_ANGLE_DEG,
+                                                  speed_deg_s=30)
+        if self.rover.arm is not None:
+            self.rover.arm.camera_angle_deg = CAMERA_VISION_ANGLE_DEG
+        print("二维码扫描成功：任务已发送，视觉相机回正到 %.1f°"
+              % CAMERA_VISION_ANGLE_DEG)
         if self.active and self.session == "full" and not self.task:
             self.task, self.task_index, self.completed = tuple(task), 0, []
             print("完整自动任务已锁定:", self.task)
         return True
 
+    def _start_camera_transition(self, target_angle, next_mode):
+        """下发相机绝对角度，并进入带读回确认的停车等待状态。"""
+        self.camera_target_angle = float(target_angle)
+        self.after_camera_mode = next_mode
+        self.camera_stable = 0
+        self.camera_check_at = ticks_ms()
+        self.deadline = ticks_add(ticks_ms(), AUTO_CAMERA_SETTLE_TIMEOUT_MS)
+        self.rover.servo_control.set_camera_angle(self.camera_target_angle,
+                                                  speed_deg_s=30)
+        if self.rover.arm is not None:
+            self.rover.arm.camera_angle_deg = self.camera_target_angle
+        self.mode = "camera_settle"
+
     def _prepare_start(self, session, mode, task=()):
         self.rover.stop()
         self.rover.center_chassis_servos()
-        self.rover.servo_control.set_camera_angle(AUTO_CAMERA_FORWARD_ANGLE_DEG, speed_deg_s=30)
-        self.active, self.mode, self.session = True, "camera_settle", session
-        self.after_camera_mode = mode
+        self.active, self.mode, self.session = True, "idle", session
         self.task, self.task_index, self.completed = tuple(task), 0, []
         self.last_line_seq = self.last_grid_seq = -1
         self.corner, self.corner_count, self.aligned_count = "none", 0, 0
         self.dock_stable = self.layout_stable = 0
         self.ground_stable = 0
+        self.frozen_grid = ()
         self.layout_key, self.pending_cell = None, None
         self.target_missing_since = 0
-        self.camera_stable = 0
-        self.camera_check_at = ticks_ms()
-        self.deadline = ticks_add(ticks_ms(), AUTO_CAMERA_SETTLE_TIMEOUT_MS)
         self.board_message_seen = self.board_invalid_reported = False
         self.fault_reason = None
         self.arm.cancel()
         self._write("@STREAM_START\n")
-        print("相机回自动标定角 %.1f deg，读回确认前车辆保持停车"
-              % AUTO_CAMERA_FORWARD_ANGLE_DEG)
+        self._start_camera_transition(CAMERA_VISION_ANGLE_DEG, mode)
+        print("相机回到视觉角 %.1f°，读回确认前车辆保持停车"
+              % CAMERA_VISION_ANGLE_DEG)
 
     def start_full(self, data):
         """使用已缓存二维码任务，从稳定九宫格获取阶段启动。"""
@@ -299,7 +406,7 @@ class AutonomousController:
             return False, "qr_task_missing"
         data["blocks"] = data["board"] = None
         self._prepare_start("full", "acquire_board", self.cached_task)
-        print("AUTO完整模式启动：二维码任务已锁定，等待稳定九宫格（不执行巡线）")
+        print("完整自动模式启动：二维码任务已锁定，等待稳定九宫格（不执行巡线）")
         return True, None
 
     def start_dock(self, data):
@@ -319,33 +426,24 @@ class AutonomousController:
             print("手动标定对正启动：无二维码任务，先等待相机到位")
         return True, None
 
-    def start_ground_align(self, data):
-        """L2：只把白色地块摆正到取放固定姿态，不执行二维码或机械臂。"""
-        if self.active:
-            return False, "already_active"
-        if not getattr(self.rover, "motors_enabled", True):
-            return False, "motors_disabled"
-        self._prepare_start("ground_align", "acquire_board")
-        print("L2 九色块外框自动对正启动：等待完整九宫格后低速平移、旋转")
-        return True, None
-
     def cancel(self, reason="manual_stop"):
         self.rover.stop()
         self.arm.cancel()
         was_active = self.active
         self.active, self.mode, self.session = False, "idle", "idle"
         self.task, self.task_index, self.completed = (), 0, []
+        self.frozen_grid = ()
         self.pending_cell = None
         self.after_camera_mode = "idle"
         if was_active:
-            print("AUTO停止:", reason)
+            print("自动流程停止：", describe_reason(reason))
 
     def _fail(self, reason):
         self.rover.stop()
         self.arm.cancel()
         self.active, self.mode = True, "fault"
         self.fault_reason = reason
-        print("AUTO故障:", reason)
+        print("自动流程故障：", describe_reason(reason))
 
     @staticmethod
     def _fresh(value, timeout=AUTO_LINE_COMMAND_TIMEOUT_MS):
@@ -366,6 +464,27 @@ class AutonomousController:
             return None, None
         return blocks, board
 
+    def _freeze_grid(self, data):
+        """冻结对正成功瞬间的九格布局，供相机移开后继续抓取。"""
+        blocks, board = self._grid_packets(data)
+        if not blocks or not board or board["value"] is None:
+            return False
+        items = VisionMath.grid(blocks, board)
+        cells = set(item["cell"] for item in items)
+        expected = set((row, column) for row in range(3) for column in range(3))
+        if len(items) != 9 or cells != expected:
+            return False
+        # 比赛规则：每列只放一种颜色；不满足时拒绝冻结错误布局。
+        for column in range(3):
+            if len(set(item["color"] for item in items
+                       if item["cell"][1] == column)) != 1:
+                return False
+        self.frozen_grid = tuple(item.copy() for item in items)
+        self.layout_key = tuple(sorted((item["color"], item["cell"][0], item["cell"][1])
+                                       for item in self.frozen_grid))
+        self.layout_stable = AUTO_GRID_LAYOUT_STABLE_OBSERVATIONS
+        return True
+
     def _update_camera_settle(self, data):
         """停车等待相机到标定角；只接受舵机到位后的新视觉帧。"""
         self.rover.stop()
@@ -378,7 +497,7 @@ class AutonomousController:
             angle = float(angle)
             if self.rover.arm is not None:
                 self.rover.arm.camera_angle_deg = angle
-            if abs(angle - AUTO_CAMERA_FORWARD_ANGLE_DEG) <= AUTO_CAMERA_SETTLE_TOLERANCE_DEG:
+            if abs(angle - self.camera_target_angle) <= AUTO_CAMERA_SETTLE_TOLERANCE_DEG:
                 self.camera_stable += 1
             else:
                 self.camera_stable = 0
@@ -388,24 +507,30 @@ class AutonomousController:
         if self.camera_stable >= AUTO_CAMERA_SETTLE_OBSERVATIONS:
             next_mode = self.after_camera_mode
             self.mode, self.after_camera_mode = next_mode, "idle"
-            # 清除相机运动期间采集的几何量，确保控制只使用到位后的新帧。
-            data["line"] = data["blocks"] = data["board"] = None
-            self.last_line_seq = self.last_grid_seq = -1
             if next_mode == "acquire_board":
+                # 回到视觉角后，只接受相机到位以后产生的新九宫格帧。
+                data["line"] = data["blocks"] = data["board"] = None
+                self.last_line_seq = self.last_grid_seq = -1
                 self.deadline = ticks_add(now, AUTO_BOARD_ACQUIRE_TIMEOUT_MS)
                 self.board_message_seen = self.board_invalid_reported = False
-                print("相机已到自动标定角，开始等待新的白纸识别结果（最长 %d ms）"
+                print("相机已回正，开始等待新的九宫格识别结果（最长 %d ms）"
                       % AUTO_BOARD_ACQUIRE_TIMEOUT_MS)
+            elif next_mode == "grid":
+                self.layout_stable = AUTO_GRID_LAYOUT_STABLE_OBSERVATIONS
+                print("相机已偏转到 +90°，开始按冻结九宫格执行抓取")
+            elif next_mode == "aligned":
+                self.active = False
+                print("相机已偏转到 +90°，自动对正流程完成")
             else:
-                print("相机已到自动标定角，开始完整自动流程")
+                print("相机舵机已到目标角 %.1f°" % self.camera_target_angle)
             return
 
         if ticks_diff(now, self.deadline) >= 0:
             if angle is None:
                 print("相机舵机无角度读回，请检查 ID 8、舵机 UART 和供电")
             else:
-                print("相机舵机未到位：readback=%.1f, target=%.1f"
-                      % (angle, AUTO_CAMERA_FORWARD_ANGLE_DEG))
+                print("相机舵机未到位：读回=%.1f°，目标=%.1f°"
+                      % (angle, self.camera_target_angle))
             self._fail("camera_settle_timeout")
 
     def _update_acquire_board(self, data):
@@ -424,7 +549,7 @@ class AutonomousController:
                 return
             if not self.board_invalid_reported:
                 self.board_invalid_reported = True
-                print("已收到 BOARD_RAW，但白纸未通过视觉检测；请查看 MaixCAM 黄色白纸框")
+            print("已收到九宫格数据，但视觉稳定条件尚未通过")
         if ticks_diff(ticks_ms(), self.deadline) >= 0:
             if self.board_message_seen:
                 self._fail("board_not_detected_timeout")
@@ -458,10 +583,10 @@ class AutonomousController:
         if new:
             self.last_grid_seq = board["sequence"]
         if (value["angle_valid"] and
-                abs(value["angle_x10"]) > AUTO_GROUND_ALIGN_ANGLE_DEADZONE_X10):
-            action = "pivot_right" if value["angle_x10"] > 0 else "pivot_left"
+                abs(value["angle_error_x10"]) > AUTO_GROUND_ALIGN_ANGLE_DEADZONE_X10):
+            action = "pivot_right" if value["angle_error_x10"] > 0 else "pivot_left"
             speed = AUTO_GROUND_ALIGN_PIVOT_SPEED_RAD_S
-            self.rover.pivot_turn((speed if value["angle_x10"] > 0 else -speed) *
+            self.rover.pivot_turn((speed if value["angle_error_x10"] > 0 else -speed) *
                                   AUTO_GROUND_ALIGN_PIVOT_SIGN,
                                   acc_rad_s2=AUTO_DRIVE_ACC_RAD_S2)
             self.ground_stable = 0
@@ -474,6 +599,13 @@ class AutonomousController:
         elif not value["complete"]:
             action = "search_backward_%d" % value["observed"]
             self.rover.drive(-AUTO_GROUND_ALIGN_SEARCH_SPEED_RAD_S, 0,
+                             acc_rad_s2=AUTO_DRIVE_ACC_RAD_S2)
+            self.ground_stable = 0
+        elif not value["scale_ok"]:
+            forward = value["range_error"] > 0
+            action = "scale_forward" if forward else "scale_backward"
+            speed = AUTO_GROUND_ALIGN_TRANSLATE_SPEED_RAD_S
+            self.rover.drive(speed if forward else -speed, 0,
                              acc_rad_s2=AUTO_DRIVE_ACC_RAD_S2)
             self.ground_stable = 0
         elif abs(value["center_dy"]) > AUTO_GROUND_ALIGN_CENTER_Y_DEADZONE_PX_480:
@@ -491,30 +623,37 @@ class AutonomousController:
             self.rover.drive(-speed, 0,
                              acc_rad_s2=AUTO_DRIVE_ACC_RAD_S2)
             self.ground_stable = 0
+        elif not value["perspective_ok"]:
+            action = "perspective_unstable"
+            self.rover.stop()
+            self.ground_stable = 0
         else:
             action = "stable"
             self.rover.stop()
             if new:
                 self.ground_stable += 1
         if new:
-            print("GROUND_ALIGN: seen=%d complete=%d dx=%d dy=%d bottom=%d angle_x10=%d contained=%d action=%s"
+            print("自动对正：已见=%d 完整=%d 水平差=%d 垂直差=%d 尺寸=%dx%d 角度=%d 角度差=%d 透视=%d/%d 合格=%d 动作=%s"
                   % (value["observed"], 1 if value["complete"] else 0, value["dx"],
-                     value["center_dy"], value["bottom_error"], value["angle_x10"],
-                     1 if value["contained"] else 0, action))
+                     value["center_dy"], value["width_640"], value["height_480"],
+                     value["angle_x10"], value["angle_error_x10"],
+                     value["top_bottom_x1000"], value["left_right_x1000"],
+                     1 if value["perspective_ok"] else 0, _action_text(action)))
         if self.ground_stable >= AUTO_GROUND_ALIGN_STABLE_OBSERVATIONS:
             self.rover.stop()
             self.rover.center_chassis_servos()
-            if self.session == "ground_align":
-                self.active, self.mode = False, "aligned"
-                print("L2 九宫格中心自动对正完成；电机保持使能，可继续手动操作")
-            elif self.session == "dock" and not self.task:
+            if not self._freeze_grid(data):
+                self.ground_stable = AUTO_GROUND_ALIGN_STABLE_OBSERVATIONS - 1
+                print("位置已稳定，但九格布局尚不完整；保持视觉角并等待下一帧")
+                return
+            print("九宫格中心自动对正成功：已冻结九格颜色和位置")
+            if self.session == "dock" and not self.task:
                 self.rover.disable()
-                self.mode = "aligned"
-                print("九宫格中心对正完成，底盘电机已失能；按 L3 返回手动")
+                self._start_camera_transition(CAMERA_MANUAL_ANGLE_DEG, "aligned")
+                print("底盘电机已失能，相机开始偏转到 +90°")
             else:
-                self.deadline = ticks_add(ticks_ms(), AUTO_GRID_SETTLE_MS)
-                self.mode = "settle"
-                print("九宫格中心对正完成，继续执行任务")
+                self._start_camera_transition(CAMERA_MANUAL_ANGLE_DEG, "grid")
+                print("相机开始偏转到 +90°；到位后继续自动抓取")
 
     def _update_line(self, data):
         blocks, board = self._grid_packets(data)
@@ -599,12 +738,12 @@ class AutonomousController:
                 self.dock_stable += 1
         if new:
             print(
-                "AUTO_DOCK: dx=%d px, height_480=%d, target=%d, "
-                "range_error=%d, action=%s"
+                "自动靠近：水平差=%d像素，画面高度=%d，目标高度=%d，"
+                "距离差=%d，动作=%s"
                 % (
                     geometry["dx"], geometry["height_480"],
                     AUTO_GRID_DOCK_TARGET_HEIGHT_PX_480,
-                    geometry["range_error"], action,
+                    geometry["range_error"], _action_text(action),
                 )
             )
         if self.dock_stable >= AUTO_GRID_DOCK_STABLE_OBSERVATIONS:
@@ -617,22 +756,10 @@ class AutonomousController:
                 self.deadline, self.mode = ticks_add(ticks_ms(), AUTO_GRID_SETTLE_MS), "settle"
 
     def _update_grid(self, data):
-        blocks, board = self._grid_packets(data)
-        if (not board or board["value"] is None or
-                not board["value"].get("complete", False)):
-            if ticks_diff(ticks_ms(), self.board_seen) > AUTO_BOARD_TIMEOUT_MS:
-                self._fail("grid_board_lost")
+        if len(self.frozen_grid) != 9:
+            self._fail("grid_snapshot_missing")
             return
-        self.board_seen = ticks_ms()
-        if board["sequence"] == self.last_grid_seq:
-            return
-        self.last_grid_seq = board["sequence"]
-        items = VisionMath.grid(blocks, board)
-        key = tuple(sorted((v["color"], v["cell"][0], v["cell"][1]) for v in items))
-        if key and key == self.layout_key:
-            self.layout_stable += 1
-        else:
-            self.layout_key, self.layout_stable = key, 1 if key else 0
+        items = self.frozen_grid
         color = self.task[self.task_index] if self.task_index < len(self.task) else None
         candidates = [v for v in items if v["color"] == color and v["cell"] not in self.completed]
         if not candidates:
@@ -642,11 +769,10 @@ class AutonomousController:
                 self._fail("target_missing_%s" % color)
             return
         self.target_missing_since = 0
-        if self.layout_stable < AUTO_GRID_LAYOUT_STABLE_OBSERVATIONS:
-            return
         target = candidates[0]
-        print("目标:", target["color"], "cell=", target["cell"],
-              "dx/dy/distance=", target["dx"], target["dy"], target["distance"])
+        print("抓取目标：颜色=%s，格位=%s，缓存偏差=(%d,%d)，距离=%d"
+              % (target["color"], str(target["cell"]), target["dx"],
+                 target["dy"], target["distance"]))
         ok, reason = self.arm.start(target["cell"][0], target["cell"][1])
         if not ok:
             self._fail(reason)
@@ -670,7 +796,6 @@ class AutonomousController:
             self.mode = "complete"
             print("二维码任务完成，车辆保持停车")
         else:
-            self.layout_key, self.layout_stable = None, 0
             self.deadline, self.mode = ticks_add(ticks_ms(), AUTO_GRID_SETTLE_MS), "settle"
 
     def update(self, data):
@@ -688,7 +813,7 @@ class AutonomousController:
         elif self.mode == "settle":
             self.rover.stop()
             if ticks_diff(ticks_ms(), self.deadline) >= 0:
-                self.last_grid_seq, self.layout_key, self.layout_stable = -1, None, 0
+                self.last_grid_seq = -1
                 self.mode = "grid"
         elif self.mode == "grid":
             self._update_grid(data)

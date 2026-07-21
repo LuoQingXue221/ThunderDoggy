@@ -1,5 +1,6 @@
 """MaixCAM entry: QR phase followed by per-frame stable grid vision."""
 
+import math
 from maix import app, camera, display, image
 from chuankou import BAUD, DEVICE, PORT_NAME, RX_PIN, TX_PIN, VisionSerial
 from code import QRReader
@@ -13,6 +14,30 @@ SAVE_RAW_ON_START = False
 RAW_IMAGE_PATH = "/root/vision_calibration.jpg"
 
 
+def _distance(a, b):
+    return int(math.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) + .5)
+
+
+def _calibration_values(blocks, board):
+    if (board is None or not board.get("complete") or len(blocks) != 9 or
+            board.get("observed", 0) != 9):
+        return None
+    points = board["points"]
+    top, bottom = _distance(points[0], points[1]), _distance(points[3], points[2])
+    left, right = _distance(points[0], points[3]), _distance(points[1], points[2])
+    values = [board["cx"], board["cy"], board["angle_x10"],
+              (top + bottom) // 2, (left + right) // 2,
+              top * 1000 // max(1, bottom), left * 1000 // max(1, right)]
+    for block in blocks:
+        values += [block["cx"], block["cy"]]
+    return values
+
+
+def _median(values):
+    values = sorted(values)
+    return values[len(values) // 2]
+
+
 def main():
     cam = camera.Camera(FRAME_WIDTH, FRAME_HEIGHT, fps=30)
     cam.skip_frames(20)
@@ -22,6 +47,8 @@ def main():
     link = None
     mode, task_payload = "qr", ""
     frame_no, streaming, raw_saved = 0, True, False
+    calibration_remaining, calibration_samples = 0, []
+    calibration_reference_pending = None
     blocks, board, ground = [], None, None
     try:
         link = VisionSerial()
@@ -60,6 +87,12 @@ def main():
                     elif command == "@STREAM_STOP":
                         streaming = False
                         print("VISION RX command: STREAM_STOP")
+                    elif command == "@CALIBRATE_GRID":
+                        mode = "blocks"
+                        stabilizer.reset()
+                        blocks, board, ground = [], None, None
+                        calibration_remaining, calibration_samples = 30, []
+                        print("GRID_CAL start: forced BLOCKS mode; hold the ideal vehicle pose still for 30 valid frames")
                     elif command.startswith("@QR_ACK,"):
                         try:
                             sequence = int(command.split(",", 1)[1])
@@ -86,6 +119,18 @@ def main():
             ground = detect_ground(img)
             blocks = detect_blocks(img, ground)
             board = stabilizer.update(blocks, detect_board(img, blocks))
+            if calibration_remaining:
+                sample = _calibration_values(blocks, board)
+                if sample is not None:
+                    calibration_samples.append(sample)
+                    calibration_remaining -= 1
+                    print("GRID_CAL_SAMPLE,%d,%s" %
+                          (30 - calibration_remaining, ",".join(str(v) for v in sample)))
+                    if calibration_remaining == 0:
+                        reference = [_median([row[index] for row in calibration_samples])
+                                     for index in range(len(calibration_samples[0]))]
+                        print("GRID_REFERENCE,%s" % ",".join(str(v) for v in reference))
+                        calibration_reference_pending = reference
 
         if link is not None:
             try:
@@ -101,6 +146,10 @@ def main():
                     qr.note_sent(frame_no, task_payload)
                     print("VISION QR TX: seq=%d bytes=%d payload=%s"
                           % (frame_no, written, task_payload))
+                if calibration_reference_pending is not None:
+                    written = link.send_grid_reference(calibration_reference_pending)
+                    print("GRID_REFERENCE UART TX: bytes=%d" % written)
+                    calibration_reference_pending = None
                 if frame_no % UART_STATS_INTERVAL == 0:
                     print("VISION UART TX stats: frames=%d bytes=%d streaming=%d mode=%s"
                           % (link.tx_frames, link.tx_bytes,

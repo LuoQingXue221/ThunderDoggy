@@ -20,6 +20,7 @@ import math
 import time
 
 from robot_config import (
+    CAMERA_MANUAL_ANGLE_DEG,
     DEFAULT_ACC_RAD_S2,
     MAX_MOTOR_RPM,
     MAX_STEER_ANGLE_DEG,
@@ -117,7 +118,9 @@ class LunarRover:
     def prepare(self):
         self.center_chassis_servos()
         if self.arm is not None:
-           # self.arm.apply_initial_pose()
+            self.servo_control.set_camera_angle(CAMERA_MANUAL_ANGLE_DEG)
+            self.arm.camera_angle_deg = CAMERA_MANUAL_ANGLE_DEG
+            # self.arm.apply_initial_pose()
             time.sleep_ms(120)
         # 上电后必须等待操作员按 △ 明确使能，避免摇杆未回中时意外起步。
         self.disable()

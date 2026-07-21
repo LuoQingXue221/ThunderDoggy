@@ -19,16 +19,13 @@ from robot_config import (CAMERA_LINK_TIMEOUT_MS, CAMERA_PROBE_INTERVAL_MS,
                           SERVO_UART_TX)
 from servo_control import ServoControl, get_all_servo_ids
 from servo_lib import ServoBus
-from vision_protocol import (apply_vision_message, blocks_log_signature,
-                             format_recognition_result, mark_vision_bytes,
+from vision_protocol import (apply_vision_message, format_recognition_result, mark_vision_bytes,
                              mark_vision_error, new_camera_data,
                              parse_vision_message, vision_link_timed_out)
 
 time.sleep(3)
 camera_data = new_camera_data()
 camera_buffer = ""
-last_blocks_log_signature = ()
-blocks_were_visible = False
 
 servo_uart = UART(SERVO_UART_ID, SERVO_UART_BAUD, tx=SERVO_UART_TX,
                   rx=SERVO_UART_RX, timeout=64)
@@ -54,7 +51,7 @@ rover = LunarRover(motor_bus, servo_control, arm=arm)
 
 
 def receive_vision(serial):
-    global camera_buffer, last_blocks_log_signature, blocks_were_visible
+    global camera_buffer
     offline_reported = False
     camera_data["link_started_ms"] = time.ticks_ms()
     last_probe_ms = time.ticks_add(camera_data["link_started_ms"],
@@ -111,15 +108,8 @@ def receive_vision(serial):
                                     if is_new:
                                         print(format_recognition_result(message))
                                 elif kind == "blocks":
-                                    signature = blocks_log_signature(value)
-                                    if value["items"]:
-                                        if signature != last_blocks_log_signature:
-                                            print(format_recognition_result(message))
-                                        blocks_were_visible = True
-                                    elif blocks_were_visible:
-                                        print(format_recognition_result(message))
-                                        blocks_were_visible = False
-                                    last_blocks_log_signature = signature
+                                    # 保留逐帧解析和缓存，供自动对正使用；终端不再输出色块明细。
+                                    pass
                                 elif kind == "calibration":
                                     print("GRID_REFERENCE,%s" % ",".join(
                                         str(v) for v in value["values"]))

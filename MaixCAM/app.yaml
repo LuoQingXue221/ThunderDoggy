@@ -1,12 +1,12 @@
 files:
+  - chuankou.py
+  - code.py
   - main.py
   - sekuai.py
-  - xunxian.py
-  - code.py
-  - chuankou.py
-id: num
-name: '0.0'
-version: 4.10.4
+  - vision_stability.py
+id: mars_rover_version
+name: Mars Rover Version 3
+version: 4.10.14
 author: '0.0'
 icon: ''
-desc: 'ThunderDoggy raw vision UART0 link'
+desc: QR-locked per-frame stable grid vision over UART0
