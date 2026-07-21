@@ -18,7 +18,7 @@ ps2_lib.py 只负责手柄底层读取和安全接收。
   ×          → 急停（失能电机）
   △          → 使能电机
   START      → 使用已识别二维码任务，启动/取消九宫格自动任务
-  L3         → 启动/取消手动巡线后的自动对位轻触
+  L3         → 启动/取消手动巡线后的自动对位夹取
   R3         → 打印九宫格标定姿态
   L3 + R3    → 全部舵机复位
   SELECT     → 退出 PS2 控制
@@ -179,7 +179,7 @@ def ps2_loop(rover, ps2, data, serial):
     print("  十字键左右=Roll  十字键上下=Pitch1(45kg)")
     print("  L1=Pitch2上  L2=Pitch2下  L1+L2=保持  R1/R2=Pitch3")
     print("  □收紧夹爪  ○放松夹爪  ×急停  △使能")
-    print("  START=完整自动  L3=对正/任务轻触  R3=打印标定姿态")
+    print("  START=完整自动  L3=对正/任务夹取  R3=打印标定姿态")
     print("  SELECT=退出  L3+R3=复位")
 
     auto = AutonomousController(rover, serial)
@@ -285,7 +285,7 @@ def ps2_loop(rover, ps2, data, serial):
             time.sleep_ms(120)
             continue
 
-        # L3：手动巡线后启动/取消对位轻触。L3+R3 复位逻辑优先。
+        # L3：手动巡线后启动/取消对位夹取。L3+R3 复位逻辑优先。
         dock_pressed = button_pressed(buttons, ps2.PS2_BTN_L3)
         if not dock_pressed:
             dock_button_latched = False

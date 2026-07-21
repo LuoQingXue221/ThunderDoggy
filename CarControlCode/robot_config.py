@@ -249,26 +249,23 @@ AUTO_GRID_REFERENCE_PERSPECTIVE_TOLERANCE_X1000 = 60
 
 ARM_GRID_CALIBRATED = False
 """九个格子的关节角全部实测填好后才能改True；False时拒绝驱动机械臂。"""
-ARM_GRID_ACTION_MODE = "touch"
-"""当前机械爪未安装，使用touch：悬停->轻触顶面->收回。"""
 ARM_GRID_MOVE_SPEED_DEG_S = 20.0
 """自动机械臂动作速度，保持低速。"""
 ARM_GRID_HOME_WAIT_MS = 1800
-ARM_GRID_HOVER_WAIT_MS = 1200
-ARM_GRID_TOUCH_WAIT_MS = 700
+ARM_GRID_GRAB_WAIT_MS = 700
 
 # 每一项都必须填写四关节绝对角度：(Roll, Pitch1, Pitch2, Pitch3)。
 # row=0是画面上方远处，row=2是画面下方近处；column=0/1/2为左/中/右。
 # 在九格实测完成之前保持None，程序会通过@GRAB_FAIL明确报告“uncalibrated”。
 ARM_GRID_POSES = {
-    (0, 0): {"hover": None, "touch": None},
-    (0, 1): {"hover": None, "touch": None},
-    (0, 2): {"hover": None, "touch": None},
-    (1, 0): {"hover": None, "touch": None},
-    (1, 1): {"hover": None, "touch": None},
-    (1, 2): {"hover": None, "touch": None},
-    (2, 0): {"hover": None, "touch": None},
-    (2, 1): {"hover": None, "touch": None},
-    (2, 2): {"hover": None, "touch": None},
+    (0, 0): None,
+    (0, 1): None,
+    (0, 2): None,
+    (1, 0): None,
+    (1, 1): None,
+    (1, 2): None,
+    (2, 0): None,
+    (2, 1): None,
+    (2, 2): None,
 }
 

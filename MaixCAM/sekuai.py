@@ -61,6 +61,86 @@ def _white_supported(img, item):
     return sum(ring) >= 5 and opposite
 
 
+def _color_counts(items):
+    """Return detected block counts keyed by color name."""
+    counts = {}
+    for item in items:
+        name = item["color"]
+        counts[name] = counts.get(name, 0) + 1
+    return counts
+
+
+def _draw_color(name, fallback):
+    for color_name, _, draw_color in COLORS:
+        if color_name == name:
+            return draw_color
+    return fallback
+
+
+def _force_grid_color_counts(items):
+    """Repair a nine-block color split to three distinct colors of three blocks.
+
+    Competition grids use one color per spatial column.  When threshold overlap
+    mislabels one or two blocks, choose the distinct color assignment with the
+    strongest per-column vote, recolor the whole column, then require the normal
+    3x3 geometry validator to accept the repaired result.  Missing blocks,
+    surplus candidates, fewer than three observed colors, and non-grid layouts
+    are deliberately not fabricated.
+    """
+    if len(items) != 9:
+        return None
+    counts = _color_counts(items)
+    if len(counts) == 3 and sorted(counts.values()) == [3, 3, 3]:
+        return items
+    colors = list(counts)
+    if len(colors) < 3:
+        return None
+
+    # At the calibrated oblique camera pose the three grid columns remain
+    # separated on X.  The full rotation-independent geometry check below is
+    # still the final authority, so a bad X grouping cannot become valid data.
+    ordered = sorted(items, key=lambda value: value["cx"])
+    columns = [sorted(ordered[index:index + 3], key=lambda value: value["cy"])
+               for index in (0, 3, 6)]
+    best = None
+    for left in colors:
+        for middle in colors:
+            if middle == left:
+                continue
+            for right in colors:
+                if right == left or right == middle:
+                    continue
+                assignment = (left, middle, right)
+                votes = [sum(1 for item in column if item["color"] == name)
+                         for column, name in zip(columns, assignment)]
+                # Never invent a column color that has no supporting detection.
+                if min(votes) == 0:
+                    continue
+                pixels = sum(item.get("pixels", 0)
+                             for column, name in zip(columns, assignment)
+                             for item in column if item["color"] == name)
+                score = (sum(votes), pixels)
+                if best is None or score > best[0]:
+                    best = (score, assignment)
+    if best is None:
+        return None
+
+    repaired = []
+    for column, name in zip(columns, best[1]):
+        for source in column:
+            item = source.copy()
+            if item["color"] != name:
+                item["original_color"] = item["color"]
+                item["color"] = name
+                item["draw_color"] = _draw_color(name, item["draw_color"])
+                item["color_forced"] = 1
+            repaired.append(item)
+    repaired_counts = _color_counts(repaired)
+    if len(repaired_counts) != 3 or sorted(repaired_counts.values()) != [3, 3, 3]:
+        return None
+    return repaired if _select_grid(repaired) else None
+
+
 def detect_blocks(img, ground=None):
     """只检测实际白色区域包围的方块，不把白区外接矩形当作掩码。"""
     fw, fh = _size(img)
@@ -94,6 +174,9 @@ def detect_blocks(img, ground=None):
             unique.append(item)
     # 先去重再做像素采样，减少每帧 get_pixel 调用次数。
     unique = [item for item in unique if _white_supported(img, item)]
+    repaired = _force_grid_color_counts(unique)
+    if repaired is not None:
+        unique = repaired
     completed = _infer_missing_blocks(unique)
     selected = _select_grid(completed)
     # 调试显示允许返回不完整候选；车控是否可用仍只由 board.complete 决定。
@@ -324,6 +407,11 @@ def draw(img, blocks, board, ground=None):
     fw, fh = _size(img)
     img.draw_line(fw // 2 - 10, fh // 2, fw // 2 + 10, fh // 2, image.COLOR_WHITE)
     img.draw_line(fw // 2, fh // 2 - 10, fw // 2, fh // 2 + 10, image.COLOR_WHITE)
+    counts = _color_counts(blocks)
+    if counts:
+        summary = " ".join("%s:%d" % (name, counts[name])
+                           for name in sorted(counts))
+        img.draw_string(8, 28, summary, image.COLOR_YELLOW)
     if ground:
         img.draw_rect(ground["x"], ground["y"], ground["w"], ground["h"], image.COLOR_WHITE, 1)
     if board:
@@ -342,5 +430,5 @@ def draw(img, blocks, board, ground=None):
             label = b["color"] + "*"
         else:
             img.draw_rect(b["x"], b["y"], b["w"], b["h"], b["draw_color"], 2)
-            label = b["color"]
+            label = b["color"] + ("!" if b.get("color_forced") else "")
         img.draw_string(b["x"], max(0, b["y"] - 15), label, b["draw_color"])

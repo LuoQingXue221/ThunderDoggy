@@ -459,6 +459,49 @@ class RobotArmSafetyTests(unittest.TestCase):
         self.assertFalse(arm.joints_synced)
 
 
+class GridArmPoseTests(unittest.TestCase):
+    class MovingArm:
+        def __init__(self):
+            self.commands = []
+
+        def move_to_pose(self, *pose, speed_deg_s=None):
+            self.commands.append((pose, speed_deg_s))
+
+    class ArmRover:
+        def __init__(self):
+            self.arm = GridArmPoseTests.MovingArm()
+
+    def setUp(self):
+        self.original_calibrated = auto_module.ARM_GRID_CALIBRATED
+        self.original_poses = auto_module.ARM_GRID_POSES
+
+    def tearDown(self):
+        auto_module.ARM_GRID_CALIBRATED = self.original_calibrated
+        auto_module.ARM_GRID_POSES = self.original_poses
+
+    def test_cell_uses_one_direct_grab_pose(self):
+        grab = (10.0, 20.0, -30.0, 40.0)
+        auto_module.ARM_GRID_CALIBRATED = True
+        auto_module.ARM_GRID_POSES = {(1, 2): grab}
+        executor = auto_module.GridArmExecutor(self.ArmRover())
+
+        ok, reason = executor.start(1, 2)
+
+        self.assertTrue(ok)
+        self.assertIsNone(reason)
+        self.assertEqual(3, len(executor.steps))
+        self.assertEqual(grab, executor.steps[1][0])
+        self.assertEqual(auto_module.ARM_GRID_GRAB_WAIT_MS, executor.steps[1][1])
+
+    def test_old_hover_touch_shape_is_rejected(self):
+        auto_module.ARM_GRID_CALIBRATED = True
+        auto_module.ARM_GRID_POSES = {
+            (0, 0): {"hover": (0, 0, 0, 0), "touch": (1, 1, 1, 1)},
+        }
+        executor = auto_module.GridArmExecutor(self.ArmRover())
+        self.assertEqual((False, "pose_missing"), executor.start(0, 0))
+
+
 class FakeMotorBus:
     def __init__(self):
         self.disabled = []

@@ -61,5 +61,41 @@ class BoardFilterTests(unittest.TestCase):
         self.assertIsNone(board)
 
 
+def grid_item(color, column, row, pixels=500):
+    return {"color": color, "draw_color": 0,
+            "x": 85 + column * 100, "y": 85 + row * 100,
+            "w": 30, "h": 30, "pixels": pixels,
+            "cx": 100 + column * 100, "cy": 100 + row * 100}
+
+
+class GridColorRepairTests(unittest.TestCase):
+    def test_wrong_counts_are_repaired_by_spatial_column_vote(self):
+        items = [
+            grid_item("red", 0, 0), grid_item("red", 0, 1),
+            grid_item("pink", 0, 2),
+            grid_item("blue", 1, 0), grid_item("blue", 1, 1),
+            grid_item("blue", 1, 2),
+            grid_item("yellow", 2, 0), grid_item("yellow", 2, 1),
+            grid_item("red", 2, 2),
+        ]
+        repaired = sekuai._force_grid_color_counts(items)
+        self.assertIsNotNone(repaired)
+        self.assertEqual({"red": 3, "blue": 3, "yellow": 3},
+                         sekuai._color_counts(repaired))
+        self.assertEqual(2, sum(item.get("color_forced", 0) for item in repaired))
+        self.assertTrue(sekuai._select_grid(repaired))
+
+    def test_valid_three_by_three_counts_are_unchanged(self):
+        items = [grid_item(color, column, row)
+                 for column, color in enumerate(("red", "blue", "yellow"))
+                 for row in range(3)]
+        self.assertIs(items, sekuai._force_grid_color_counts(items))
+
+    def test_missing_color_evidence_is_not_fabricated(self):
+        items = [grid_item("red" if column != 1 else "blue", column, row)
+                 for column in range(3) for row in range(3)]
+        self.assertIsNone(sekuai._force_grid_color_counts(items))
+
+
 if __name__ == "__main__":
     unittest.main()

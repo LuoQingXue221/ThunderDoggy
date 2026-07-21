@@ -5,8 +5,8 @@ import time
 
 from arm_control import ArmKinematicsError
 from robot_config import (
-    ARM_GRID_CALIBRATED, ARM_GRID_HOME_WAIT_MS, ARM_GRID_HOVER_WAIT_MS,
-    ARM_GRID_MOVE_SPEED_DEG_S, ARM_GRID_POSES, ARM_GRID_TOUCH_WAIT_MS,
+    ARM_GRID_CALIBRATED, ARM_GRID_GRAB_WAIT_MS, ARM_GRID_HOME_WAIT_MS,
+    ARM_GRID_MOVE_SPEED_DEG_S, ARM_GRID_POSES,
     ARM_INIT_PITCH1_DEG, ARM_INIT_PITCH2_DEG, ARM_INIT_PITCH3_DEG,
     ARM_INIT_ROLL_DEG, AUTO_BOARD_ACQUIRE_TIMEOUT_MS,
     AUTO_BOARD_COMMAND_TIMEOUT_MS, AUTO_BOARD_TIMEOUT_MS,
@@ -138,15 +138,13 @@ class GridArmExecutor:
             return False, "arm_missing"
         if not ARM_GRID_CALIBRATED:
             return False, "uncalibrated"
-        poses = ARM_GRID_POSES.get((row, column))
-        if not poses or not self._pose(poses.get("hover")) or not self._pose(poses.get("touch")):
+        pose = ARM_GRID_POSES.get((row, column))
+        if not self._pose(pose):
             return False, "pose_missing"
         home = (ARM_INIT_ROLL_DEG, ARM_INIT_PITCH1_DEG,
                 ARM_INIT_PITCH2_DEG, ARM_INIT_PITCH3_DEG)
         self.steps = [(home, ARM_GRID_HOME_WAIT_MS),
-                      (poses["hover"], ARM_GRID_HOVER_WAIT_MS),
-                      (poses["touch"], ARM_GRID_TOUCH_WAIT_MS),
-                      (poses["hover"], ARM_GRID_HOVER_WAIT_MS),
+                      (pose, ARM_GRID_GRAB_WAIT_MS),
                       (home, ARM_GRID_HOME_WAIT_MS)]
         self.index, self.active = -1, True
         try:
@@ -413,7 +411,7 @@ class AutonomousController:
         """
         从白纸获取/对位阶段启动。
 
-        有缓存任务时在对正后继续选块和轻触；无任务时只对正并停车。
+        有缓存任务时在对正后继续选块并移动到夹取位；无任务时只对正并停车。
         """
         if self.active:
             return False, "already_active"
