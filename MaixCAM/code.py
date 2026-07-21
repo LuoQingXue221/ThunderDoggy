@@ -4,15 +4,34 @@ from maix import image
 
 
 class QRReader:
-    def __init__(self, stable_required=2):
+    def __init__(self, stable_required=2, retry_detections=2):
         self.required = max(1, stable_required)
+        self.retry_detections = max(1, retry_detections)
         self.last = ""
         self.count = 0
-        self.sent = ""
+        self.confirmed = ""
+        self.pending_text = ""
+        self.pending_sequence = -1
+        self.retry_wait = 0
         self.qr = None
 
     def reset(self):
-        self.last, self.count, self.sent, self.qr = "", 0, "", None
+        self.last, self.count, self.confirmed, self.qr = "", 0, "", None
+        self.pending_text, self.pending_sequence, self.retry_wait = "", -1, 0
+
+    def note_sent(self, sequence, text):
+        """记录一次UART写入；在ESP32确认前仍会定时重发。"""
+        if text == self.pending_text:
+            self.pending_sequence = int(sequence)
+            self.retry_wait = 0
+
+    def acknowledge(self, sequence):
+        """只确认当前等待中的发送序号，旧ACK不会误确认新的二维码。"""
+        if int(sequence) != self.pending_sequence or not self.pending_text:
+            return False
+        self.confirmed = self.pending_text
+        self.pending_text, self.pending_sequence, self.retry_wait = "", -1, 0
+        return True
 
     def detect(self, img):
         codes = img.find_qrcodes()
@@ -25,8 +44,16 @@ class QRReader:
             self.count += 1
         else:
             self.last, self.count = text, 1
-        if self.count >= self.required and text and text != self.sent:
-            self.sent = text
+        if self.count < self.required or not text or text == self.confirmed:
+            return None
+        if text != self.pending_text:
+            self.pending_text, self.pending_sequence, self.retry_wait = text, -1, 0
+            return text
+        if self.pending_sequence < 0:
+            return text
+        self.retry_wait += 1
+        if self.retry_wait >= self.retry_detections:
+            self.retry_wait = 0
             return text
         return None
 

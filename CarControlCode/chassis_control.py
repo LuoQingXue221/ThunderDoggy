@@ -119,7 +119,8 @@ class LunarRover:
         if self.arm is not None:
            # self.arm.apply_initial_pose()
             time.sleep_ms(120)
-        self.enable_motors()
+        # 上电后必须等待操作员按 △ 明确使能，避免摇杆未回中时意外起步。
+        self.disable()
 
     def enable_motors(self):
         """使能四轮：init_speed_mode 内先失能再写速度模式与 PI，最后使能。"""

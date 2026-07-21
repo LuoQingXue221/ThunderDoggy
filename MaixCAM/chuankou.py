@@ -1,31 +1,33 @@
-"""MaixCAM UART1 原始视觉观测协议。"""
+"""MaixCAM UART0 原始视觉观测协议；保持与已验证实车接线兼容。"""
 
-from maix import err, pinmap, uart
+from maix import uart
 
-DEVICE, BAUD = "/dev/ttyS1", 115200
-
-
-def _pinmux():
-    err.check_raise(pinmap.set_pin_function("A19", "UART1_TX"), "UART1 TX pin failed")
-    err.check_raise(pinmap.set_pin_function("A18", "UART1_RX"), "UART1 RX pin failed")
+DEVICE, BAUD = "/dev/ttyS0", 115200
+PORT_NAME, TX_PIN, RX_PIN = "UART0", "A16", "A17"
+PROTOCOL_VERSION = 3
 
 
 class VisionSerial:
     def __init__(self):
-        _pinmux()
+        # UART0 是旧版实车已验证通道，A16/A17 默认已映射，无需再次 pinmap。
         self.uart = uart.UART(DEVICE, BAUD)
         self.buffer = ""
+        self.tx_frames = 0
+        self.tx_bytes = 0
 
     def send(self, fields):
-        return self.uart.write_str(",".join(str(v) for v in fields) + "\n")
+        packet = ",".join(str(v) for v in fields) + "\n"
+        packet_bytes = len(packet.encode("utf-8"))
+        written = self.uart.write_str(packet)
+        if isinstance(written, int) and written != packet_bytes:
+            raise OSError("UART short write %d/%d" % (written, packet_bytes))
+        self.tx_frames += 1
+        self.tx_bytes += packet_bytes if written is None else int(written)
+        return packet_bytes if written is None else int(written)
 
-    def send_line(self, sequence, result):
-        fields = ["@LINE_RAW", sequence, result["frame_w"], result["frame_h"]]
-        for point in result["points"]:
-            fields += [-1, -1, 0, 0, 0] if point is None else [
-                point["cx"], point["cy"], point["w"], point["h"], point["pixels"]]
-        fields += [result["left_pixels"], result["right_pixels"]]
-        return self.send(fields)
+    def send_status(self, sequence, streaming=True):
+        return self.send(["@VISION_STATUS", PROTOCOL_VERSION, sequence,
+                          1 if streaming else 0])
 
     def send_blocks(self, sequence, width, height, blocks):
         fields = ["@BLOCKS_RAW", sequence, width, height, len(blocks)]
@@ -35,9 +37,14 @@ class VisionSerial:
 
     def send_board(self, sequence, width, height, board):
         if board is None:
-            return self.send(["@BOARD_RAW", sequence, width, height, 0, 0, 0, 0, 0, 0])
-        return self.send(["@BOARD_RAW", sequence, width, height, 1, board["x"],
-                          board["y"], board["w"], board["h"], board["pixels"]])
+            return self.send(["@BOARD_RAW", sequence, width, height, 0] + [0] * 17)
+        fields = ["@BOARD_RAW", sequence, width, height, 1, board["observed"],
+                  board["complete"], board["cx"], board["cy"], board["center_x"],
+                  board["center_y"], board["angle_x10"], board["angle_valid"]]
+        for point in board["points"]:
+            fields += [point[0], point[1]]
+        fields += [board["pixels"]]
+        return self.send(fields)
 
     def send_qr(self, sequence, text):
         return self.send(["@QR_RAW", sequence, str(text).replace(",", " ")])

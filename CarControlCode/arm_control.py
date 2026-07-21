@@ -59,6 +59,7 @@ class RobotArm:
         self.pitch2_deg = ARM_INIT_PITCH2_DEG
         self.pitch3_deg = ARM_INIT_PITCH3_DEG
         self.camera_angle_deg = CAMERA_ANGLE_MAX_DEG
+        self.joints_synced = False
 
     def sync_camera_from_servo(self):
         """读取相机舵机真实角度，并更新 camera_angle_deg。"""
@@ -114,6 +115,11 @@ class RobotArm:
     def jog_joints(self, roll_delta_deg=0.0, pitch1_delta_deg=0.0,
                    pitch2_delta_deg=0.0, pitch3_delta_deg=0.0,
                    speed_deg_s=ARM_SERVO_SPEED_DEG_S):
+        if not self.joints_synced:
+            raise ArmKinematicsError(
+                "state_unsynced",
+                "机械臂真实角度尚未同步，请先按 R3 读取姿态或使用 L3+R3 复位。",
+            )
         return self._move_to_joint_pose(
             self.roll_deg + roll_delta_deg,
             self.pitch1_deg + pitch1_delta_deg,
@@ -151,15 +157,13 @@ class RobotArm:
         pitch1 = float(pitch1)
         pitch2 = float(pitch2)
         pitch3 = float(pitch3)
-        (self.roll_deg,
-         self.pitch1_deg,
-         self.pitch2_deg,
-         self.pitch3_deg) = self._clamp_joint_pose(
-            roll,
-            pitch1,
-            pitch2,
-            pitch3,
-        )
+        self._require_range("roll", roll, ARM_ROLL_MIN_DEG, ARM_ROLL_MAX_DEG)
+        self._require_range("pitch1", pitch1, ARM_PITCH1_MIN_DEG, ARM_PITCH1_MAX_DEG)
+        self._require_range("pitch2", pitch2, ARM_PITCH2_MIN_DEG, ARM_PITCH2_MAX_DEG)
+        self._require_range("pitch3", pitch3, ARM_PITCH3_MIN_DEG, ARM_PITCH3_MAX_DEG)
+        self.roll_deg, self.pitch1_deg = roll, pitch1
+        self.pitch2_deg, self.pitch3_deg = pitch2, pitch3
+        self.joints_synced = True
         return self._build_move_result()
 
     def apply_joint_pose(self, speed_deg_s=ARM_SERVO_SPEED_DEG_S):
@@ -179,6 +183,7 @@ class RobotArm:
             self.pitch3_deg,
             speed_deg_s=speed_deg_s,
         )
+        self.joints_synced = True
         return self._build_move_result(speed_deg_s)
 
     def _move_to_joint_pose(self, target_roll_deg, target_pitch1_deg,
@@ -200,6 +205,7 @@ class RobotArm:
             self.pitch3_deg,
             speed_deg_s=speed_deg_s,
         )
+        self.joints_synced = True
         return self._build_move_result(speed_deg_s)
 
     def _clamp_joint_pose(self, roll_deg, pitch1_deg, pitch2_deg, pitch3_deg):

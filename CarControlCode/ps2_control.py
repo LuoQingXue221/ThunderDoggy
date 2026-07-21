@@ -10,13 +10,16 @@ ps2_lib.py 只负责手柄底层读取和安全接收。
   右摇杆 X   → 相机旋转
   十字键左右 → Roll 舵机
   十字键上下 → Pitch1（45 kg 舵机）
-  L1 / L2    → Pitch2 上下
+  L1          → Pitch2 上
+  L1 + L2     → Pitch2 下
+  L2          → 九色块外框自动对正
   R1 / R2    → Pitch3 上下
   □          → 收紧夹爪
   ○          → 放松夹爪
   ×          → 急停（失能电机）
   △          → 使能电机
-  START      → 启动/取消视觉自动任务
+  START      → 使用已识别二维码任务，启动/取消九宫格自动任务
+  L3         → 启动/取消手动巡线后的自动对位轻触
   R3         → 打印九宫格标定姿态
   L3 + R3    → 全部舵机复位
   SELECT     → 退出 PS2 控制
@@ -33,6 +36,8 @@ import time
 from arm_control import ArmKinematicsError
 from autonomous_control import AutonomousController
 from robot_config import (
+    AUTO_BOARD_COMMAND_TIMEOUT_MS,
+    AUTO_GRID_DOCK_TARGET_HEIGHT_PX_480,
     MAX_MOTOR_RPM,
     PIVOT_SPEED_SCALE,
     RESERVE_SERVO_ENABLED,
@@ -41,15 +46,8 @@ from robot_config import (
 
 _MAX_MOTOR_RAD_S = MAX_MOTOR_RPM * 2.0 * math.pi / 60.0
 _MAX_PIVOT_RAD_S = _MAX_MOTOR_RAD_S * PIVOT_SPEED_SCALE
-_ARM_JOG_STEP_DEG = 8
+_ARM_JOG_STEP_DEG = 2
 
-# 单独按下十字键 UP 时使用的机械臂演示姿态，可按需要修改这四个角度。
-_ARM_DEMO_ROLL_DEG = 30.0
-_ARM_DEMO_PITCH1_DEG = 30.0
-_ARM_DEMO_PITCH2_DEG = -110.0
-_ARM_DEMO_PITCH3_DEG = 20.0
-_ARM_POSE_SETTLE_MS = 2000
-_ARM_DEMO_HOLD_MS = 3000
 _CAMERA_JOG_STEP_DEG = 8
 
 # 底盘摇杆死区（百分比值 0–100，低于此值视为无操作）
@@ -149,51 +147,48 @@ def _set_gripper_angle(rover, delta):
         _gripper_warned = True
 
 
-def _print_grid_pose(rover):
-    """打印当前四关节绝对角度，供九宫格 hover/touch 标定使用。"""
-    if rover.arm is None:
-        return
-    try:
-        pose = rover.arm.sync_from_servos()
-        print(
-            "GRID_POSE=(%.1f, %.1f, %.1f, %.1f)"
-            % (
-                pose["roll_deg"],
-                pose["pitch1_deg"],
-                pose["pitch2_deg"],
-                pose["pitch3_deg"],
+def _print_calibration_snapshot(rover, data, serial=None):
+    """打印机械臂姿态和当前白纸高度，供九宫格覆盖范围标定。"""
+    if rover.arm is not None:
+        try:
+            pose = rover.arm.sync_from_servos()
+            print(
+                "GRID_POSE=(%.1f, %.1f, %.1f, %.1f)"
+                % (
+                    pose["roll_deg"],
+                    pose["pitch1_deg"],
+                    pose["pitch2_deg"],
+                    pose["pitch3_deg"],
+                )
             )
-        )
-    except ArmKinematicsError as err:
-        print_arm_error(err)
+        except ArmKinematicsError as err:
+            print_arm_error(err)
 
+    if serial is not None:
+        serial.write(b"@CALIBRATE_GRID\n")
+        print("GRID_CAL：已通知相机采集30个稳定帧，请保持车辆和九宫格静止。")
 
-
-def run_arm_pose_demo(rover):
-    """机械臂回初始位，再到自定义姿态，保持 3 秒后回初始位。"""
-    if rover.arm is None:
-        print("机械臂未初始化，无法执行姿态演示。")
+    board_packet = data.get("board")
+    if (not board_packet or board_packet.get("value") is None or
+            ticks_diff(ticks_ms(), board_packet.get("rx_ms", 0)) >
+            AUTO_BOARD_COMMAND_TIMEOUT_MS):
+        print("BOARD_CAL: unavailable（白纸未识别或数据已过期）")
         return
 
-    rover.stop()
-    try:
-        # 先回初始位，并等待舵机运动完成，避免下一条指令立即覆盖它。
-        rover.arm.apply_initial_pose()
-        time.sleep_ms(_ARM_POSE_SETTLE_MS)
-
-        # jog_joints 使用相对角度，因此用目标角减去当前（初始）角度。
-        rover.arm.jog_joints(
-            roll_delta_deg=_ARM_DEMO_ROLL_DEG - rover.arm.roll_deg,
-            pitch1_delta_deg=_ARM_DEMO_PITCH1_DEG - rover.arm.pitch1_deg,
-            pitch2_delta_deg=_ARM_DEMO_PITCH2_DEG - rover.arm.pitch2_deg,
-            pitch3_delta_deg=_ARM_DEMO_PITCH3_DEG - rover.arm.pitch3_deg,
+    frame_h = max(1, int(board_packet.get("frame_h", 480)))
+    raw_height = int(board_packet["value"]["h"])
+    height_480 = raw_height * 480 // frame_h
+    print(
+        "BOARD_CAL: height_480=%d, current_target=%d, "
+        "suggested_target=%d, raw_height=%d/%d"
+        % (
+            height_480,
+            AUTO_GRID_DOCK_TARGET_HEIGHT_PX_480,
+            height_480,
+            raw_height,
+            frame_h,
         )
-        time.sleep_ms(_ARM_DEMO_HOLD_MS)
-
-        rover.arm.apply_initial_pose()
-        time.sleep_ms(_ARM_POSE_SETTLE_MS)
-    except ArmKinematicsError as err:
-        print_arm_error(err)
+    )
 
 # ==============================================================================
 # 主循环控制
@@ -203,18 +198,29 @@ def ps2_loop(rover, ps2, data, serial):
 
     print("PS2 控制：")
     print("  左摇杆=平移  右摇杆Y=底盘旋转  右摇杆X=相机")
-    print("  十字键左右=Roll  UP=姿态演示  DOWN=Pitch1-  L2+UP=Pitch1+")
-    print("  L1/L2=Pitch2  R1/R2=Pitch3")
+    print("  十字键左右=Roll  十字键上下=Pitch1(45kg)")
+    print("  L1=Pitch2上  L1+L2=Pitch2下  L2=九色块外框自动对正  R1/R2=Pitch3")
     print("  □收紧夹爪  ○放松夹爪  ×急停  △使能")
-    print("  START=视觉自动任务  R3=打印标定姿态  SELECT=退出  L3+R3=复位")
+    print("  START=完整自动  L3=对正/任务轻触  R3=打印标定姿态")
+    print("  SELECT=退出  L3+R3=复位")
 
     auto = AutonomousController(rover, serial)
     start_button_latched = False
+    dock_button_latched = False
+    ground_align_button_latched = False
     pose_print_latched = False
+
+    if rover.arm is not None:
+        try:
+            rover.arm.sync_from_servos()
+            print("机械臂真实角度同步成功。")
+        except ArmKinematicsError as err:
+            print_arm_error(err)
 
     while True:
         # 【第一步：触发底层更新】
         ps2.update()
+        auto.observe_qr(data)
 
         # 【第二步：获取手柄快照】
         # fresh: 数据是否有效（布尔值）
@@ -245,6 +251,8 @@ def ps2_loop(rover, ps2, data, serial):
         # L3 + R3：全部复位
         if (button_pressed(buttons, ps2.PS2_BTN_L3) and
                 button_pressed(buttons, ps2.PS2_BTN_R3)):
+            # 组合键复位后即使先松开 R3，也不能误触发单按 L3。
+            dock_button_latched = True
             auto.cancel("servo_reset")
             rover.stop()
             if rover.arm is not None:
@@ -272,27 +280,74 @@ def ps2_loop(rover, ps2, data, serial):
 
         # △：使能电机
         if button_pressed(buttons, ps2.PS2_BTN_TRIANGLE):
-            rover.enable_motors()
+            if auto.active:
+                print("自动任务未退出，不允许重新使能底盘。")
+            else:
+                rover.enable_motors()
+                print("底盘电机已使能。")
             time.sleep_ms(200)
             continue
 
-        # 单独按下 UP：执行机械臂固定姿态演示。
-        # 排除 L2 + UP，保留新版联合点动功能。
-        if (button_pressed(buttons, ps2.PS2_BTN_UP) and
-                not button_pressed(buttons, ps2.PS2_BTN_L2)):
-            run_arm_pose_demo(rover)
-            continue
-
-        # START：启动/取消视觉自动任务（原 main 键位中未占用）
+        # START：使用已缓存二维码任务，启动/取消九宫格自动任务。
         start_pressed = button_pressed(buttons, ps2.PS2_BTN_START)
         if not start_pressed:
             start_button_latched = False
         elif not start_button_latched:
             start_button_latched = True
             if auto.active:
-                auto.cancel("ps2_start_toggle")
+                if auto.session == "full":
+                    auto.cancel("ps2_start_toggle")
+                else:
+                    print("局部自动进行中，请按 L3 取消。")
             else:
-                auto.start(data)
+                ok, reason = auto.start_full(data)
+                if not ok and reason == "motors_disabled":
+                    print("START完整自动拒绝：底盘电机已失能，请先按 △ 使能。")
+                elif not ok and reason == "qr_task_missing":
+                    print("START拒绝：请先让相机识别二维码并等待任务确认。")
+                elif not ok:
+                    print("START完整自动拒绝:", reason)
+            time.sleep_ms(120)
+            continue
+
+        # L2：低速九色块外框自动对正。占用 L2 单键，Pitch2 下调改为 L1+L2。
+        ground_align_pressed = (button_pressed(buttons, ps2.PS2_BTN_L2) and
+                                not button_pressed(buttons, ps2.PS2_BTN_L1))
+        if not ground_align_pressed:
+            ground_align_button_latched = False
+        elif not ground_align_button_latched:
+            ground_align_button_latched = True
+            if auto.active:
+                if auto.session == "ground_align":
+                    auto.cancel("ps2_l2_toggle")
+                else:
+                    print("其他自动流程进行中，请先按对应按键取消。")
+            else:
+                ok, reason = auto.start_ground_align(data)
+                if not ok and reason == "motors_disabled":
+                    print("L2 自动对正拒绝：底盘电机已失能，请先按 △ 使能。")
+                elif not ok:
+                    print("L2 自动对正拒绝:", reason)
+            time.sleep_ms(120)
+            continue
+
+        # L3：手动巡线后启动/取消对位轻触。L3+R3 复位逻辑优先。
+        dock_pressed = button_pressed(buttons, ps2.PS2_BTN_L3)
+        if not dock_pressed:
+            dock_button_latched = False
+        elif not dock_button_latched:
+            dock_button_latched = True
+            if auto.active:
+                if auto.session == "dock":
+                    auto.cancel("ps2_l3_toggle")
+                else:
+                    print("完整自动进行中，请按 START 取消。")
+            else:
+                ok, reason = auto.start_dock(data)
+                if not ok and reason == "motors_disabled":
+                    print("L3局部自动拒绝：底盘电机已失能，请先按 △ 使能。")
+                elif not ok:
+                    print("L3局部自动拒绝:", reason)
             time.sleep_ms(120)
             continue
 
@@ -308,7 +363,7 @@ def ps2_loop(rover, ps2, data, serial):
             pose_print_latched = False
         elif not pose_print_latched:
             pose_print_latched = True
-            _print_grid_pose(rover)
+            _print_calibration_snapshot(rover, data, serial)
 
         # ======================================================================
         # 夹爪控制
@@ -338,11 +393,10 @@ def ps2_loop(rover, ps2, data, serial):
         if button_pressed(buttons, ps2.PS2_BTN_DOWN):
             pitch1_delta -= _ARM_JOG_STEP_DEG
 
-        # L1 / L2 → Pitch2
+        # L1 → Pitch2 上；L1 + L2 → Pitch2 下（L2 单键留给自动对正）。
         if button_pressed(buttons, ps2.PS2_BTN_L1):
-            pitch2_delta += _ARM_JOG_STEP_DEG
-        if button_pressed(buttons, ps2.PS2_BTN_L2):
-            pitch2_delta -= _ARM_JOG_STEP_DEG
+            pitch2_delta += (-_ARM_JOG_STEP_DEG if button_pressed(buttons, ps2.PS2_BTN_L2)
+                             else _ARM_JOG_STEP_DEG)
 
         # R1 / R2 → Pitch3
         if button_pressed(buttons, ps2.PS2_BTN_R1):
