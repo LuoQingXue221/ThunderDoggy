@@ -37,6 +37,7 @@ from autonomous_control import AutonomousController, describe_reason
 from robot_config import (
     ARM_GRIPPER_CLOSED_DEG,
     ARM_GRIPPER_OPEN_DEG,
+    ARM_GRIPPER_RESET_DEG,
     ARM_GRIPPER_SERVO_ID,
     CAMERA_MANUAL_ANGLE_DEG,
     MAX_MOTOR_RPM,
@@ -243,7 +244,7 @@ def ps2_loop(rover, ps2, data, serial):
                 rover.servo_control.set_camera_angle(CAMERA_MANUAL_ANGLE_DEG)
                 rover.arm.camera_angle_deg = CAMERA_MANUAL_ANGLE_DEG
             rover.center_chassis_servos()
-            _gripper_angle_deg = ARM_GRIPPER_CLOSED_DEG
+            _gripper_angle_deg = ARM_GRIPPER_RESET_DEG
             _set_gripper_angle(rover, 0.0)
             print("L3+R3：全部舵机已复位。")
             time.sleep_ms(500)

@@ -179,7 +179,7 @@ ESP32 上电后会自动发送 `@STREAM_START` 握手，并在 2.5 秒没有收�
 | MaixCAM 通信 | ESP32 UART1，115200，TX=5，RX=6 |
 | 电机 CAN | CAN0，1 Mbps，TX=8，RX=18 |
 | PS2 | DI=9，DO=10，CS=11，CLK=12 |
-| 运行模式 | `RUN_MODE = "ps2"` |
+| 运行模式 | `RUN_MODE = "ps2"`（也可设为 `"idle"` 或 `"test"`） |
 
 ### MaixCAM UART0 接线
 
@@ -304,6 +304,22 @@ python -m mpremote connect COM6 reset
 | R1 / R2 | Pitch3 增加/减小 |
 | □ / ○ | 收紧/放松夹爪 |
 | R3 | 打印当前四关节 `GRID_POSE` 和白纸标定高度 `BOARD_CAL` |
+
+### TEST 模式：自动对正后的手动姿态采集
+
+将 `CarControlCode/robot_config.py` 中的运行模式设为：
+
+```python
+RUN_MODE = "test"
+```
+
+此模式保留 MaixCAM 视觉链路和自动对正，但不会读取二维码任务、冻结颜色快照或执行自动抓取。上电时底盘六个转向舵机与相机舵机锁定；机械臂四关节和夹爪保持上电但释放扭矩，因此可用手直接调整姿态。
+
+- `L3`：启动或取消仅自动对正。启动时底盘电机临时使能；完成、取消或故障后均失能。完成后相机偏转到 `+90°`。
+- `R3`：单按开启/关闭读角；开启后每 0.2 秒输出一次：`TEST_ARM_POSE,roll=...,pitch1=...,pitch2=...,pitch3=...`。
+- `SELECT`：退出 TEST 模式；其他手柄按键均不控制机械臂、夹爪、相机或底盘。
+
+机械臂扭矩释放后会因重力下垂。进入 TEST 模式前必须先用支架托住机械臂，手动调整时也应避开九宫格、车体和线缆。
 
 ## 九宫格机械臂标定
 

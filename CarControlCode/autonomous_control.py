@@ -483,6 +483,17 @@ class AutonomousController:
             print("手动标定对正启动：无二维码任务，先等待相机到位")
         return True, None
 
+    def start_alignment_only(self, data):
+        """启动不依赖二维码、对正后绝不进入抓取的九宫格对正流程。"""
+        if self.active:
+            return False, "already_active"
+        if not getattr(self.rover, "motors_enabled", True):
+            return False, "motors_disabled"
+        data["blocks"] = data["board"] = None
+        self._prepare_start("dock", "acquire_board", ())
+        print("测试对正启动：已忽略二维码任务，仅执行自动对正")
+        return True, None
+
     def cancel(self, reason="manual_stop"):
         self.rover.stop()
         self.arm.cancel()

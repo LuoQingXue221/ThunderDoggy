@@ -16,7 +16,7 @@ def clamp(value, low, high):
 # =============================================================================
 
 RUN_MODE = "ps2"
-"""程序运行模式："ps2" 使用 PS2 手柄遥控，"idle" 执行 main.py 中的学生示例程序。"""
+"""程序运行模式："ps2" 正常遥控/自动抓取；"idle" 保持停车；"test" 自动对正后释放机械臂供手动标定。"""
 
 SERVO_UART_ID    = 2
 """舵机总线使用的 ESP32 硬件 UART 编号；必须与当前固件支持的 UART 外设一致。"""
@@ -89,11 +89,11 @@ RESERVE_SERVO_IDS = (14,)
 """预留舵机 ID 元组；启用后可配置一个或多个 ID，例如 (13, 14)。"""
 RESERVE_SERVO_SIGNS = {14: 1}
 """每个预留舵机的方向系数：1 表示同向，-1 表示反向；键必须对应预留舵机 ID。"""
-RESERVE_SERVO_INIT_ANGLE_DEG = {14: 0.0}
+RESERVE_SERVO_INIT_ANGLE_DEG = {14: 40.0}
 """每个预留舵机上电初始化的逻辑角度，单位度；键必须对应预留舵机 ID。"""
 RESERVE_SERVO_MIN_DEG = {14: 0.0}
 """每个预留舵机允许的最小逻辑角度，单位度；用于限制控制命令以保护机构。"""
-RESERVE_SERVO_MAX_DEG = {14: 35.0}
+RESERVE_SERVO_MAX_DEG = {14: 40.0}
 """每个预留舵机允许的最大逻辑角度，单位度；必须大于或等于对应最小角度。"""
 
 STEER_ANGLE_MIN_DEG = -90.0
@@ -147,13 +147,13 @@ ARM_PITCH3_MAX_DEG = 150.0
 ARM_SERVO_SPEED_DEG_S = 60.0
 """机械臂各关节执行角度命令时的默认运动速度，单位 deg/s。"""
 
-ARM_INIT_ROLL_DEG = 0.0
+ARM_INIT_ROLL_DEG = -0.3
 """机械臂回初始姿态时 Roll 关节的目标逻辑角度，单位度。"""
-ARM_INIT_PITCH1_DEG = 50
+ARM_INIT_PITCH1_DEG = 61.9
 """机械臂回初始姿态时 Pitch1 关节的目标逻辑角度，单位度。"""
-ARM_INIT_PITCH2_DEG = -140.0
+ARM_INIT_PITCH2_DEG = -144.2
 """机械臂回初始姿态时 Pitch2 关节的目标逻辑角度，单位度。"""
-ARM_INIT_PITCH3_DEG = 0.0
+ARM_INIT_PITCH3_DEG = 51.2
 """机械臂回初始姿态时 Pitch3 关节的目标逻辑角度，单位度。"""
 
 
@@ -264,7 +264,7 @@ AUTO_GRID_REFERENCE_PERSPECTIVE_TOLERANCE_X1000 = 60
 # 九宫格固定机械臂动作表（当前启用前两行，第三行预留）
 # =============================================================================
 
-ARM_GRID_CALIBRATED = False
+ARM_GRID_CALIBRATED = True
 """六个已配置格位完成受控实机验证后才能改True；False时拒绝驱动机械臂。"""
 ARM_GRID_ACTION_MODE = "grab"
 """自动动作使用grab：悬停->夹取->闭爪->悬停->料斗->开爪。"""
@@ -274,7 +274,9 @@ ARM_GRID_MOVE_SETTLE_MS = 250
 """按角度差估算运动时间后追加的机械结构稳定时间。"""
 ARM_GRIPPER_SERVO_ID = 14
 ARM_GRIPPER_CLOSED_DEG = 0.0
-ARM_GRIPPER_OPEN_DEG = 35.0
+ARM_GRIPPER_OPEN_DEG = 95.0
+ARM_GRIPPER_RESET_DEG = 40.0
+"""按 L3+R3 组合复位时，夹爪回到的安全中间角度。"""
 ARM_GRIPPER_SPEED_DEG_S = 60.0
 ARM_GRIPPER_SETTLE_MS = 250
 ARM_HOPPER_POSE = (3.9, 5.4, 70.5, 137.1)

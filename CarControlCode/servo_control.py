@@ -70,6 +70,20 @@ def get_all_servo_ids():
     return BASE_SERVO_IDS
 
 
+def get_test_locked_servo_ids():
+    """test 模式中需要锁定的底盘转向与相机舵机 ID。"""
+    return (1, 2, 3, 4, 5, 6, CAMERA_SERVO_ID)
+
+
+def get_test_released_servo_ids():
+    """test 模式中保持上电但释放扭矩的机械臂与夹爪舵机 ID。"""
+    ids = (_ARM_PITCH1_SERVO_ID, _ARM_ROLL_SERVO_ID,
+           _ARM_PITCH2_SERVO_ID, _ARM_PITCH3_SERVO_ID)
+    if RESERVE_SERVO_ENABLED:
+        ids += tuple(RESERVE_SERVO_IDS)
+    return ids
+
+
 def _servo_id_by_name(name):
     try:
         return _STEERING_SERVO_IDS[name]

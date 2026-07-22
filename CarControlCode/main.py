@@ -14,11 +14,14 @@ from ps2_lib import PS2Controller, PS2Receiver
 from robot_config import (CAMERA_LINK_TIMEOUT_MS, CAMERA_PROBE_INTERVAL_MS,
                           CAMERA_UART_BAUD, CAMERA_UART_ID, CAMERA_UART_RX,
                           CAMERA_UART_TX, CAN_BAUDRATE, CAN_BUS_ID, CAN_RX, CAN_TX,
+                          CAMERA_VISION_ANGLE_DEG,
                           PS2_CLK, PS2_CS, PS2_DI, PS2_DO, RUN_MODE,
                           SERVO_UART_BAUD, SERVO_UART_ID, SERVO_UART_RX,
                           SERVO_UART_TX)
-from servo_control import ServoControl, get_all_servo_ids
+from servo_control import (ServoControl, get_all_servo_ids,
+                           get_test_locked_servo_ids, get_test_released_servo_ids)
 from servo_lib import ServoBus
+from test_control import test_loop
 from vision_protocol import (apply_vision_message, format_recognition_result, mark_vision_bytes,
                              mark_vision_error, new_camera_data,
                              parse_vision_message, vision_link_timed_out)
@@ -42,10 +45,18 @@ can.clear_rx_queue()
 
 motor_bus = MotorBus(can)
 servo_bus = ServoBus(servo_uart)
-servo_bus.reset_turns_polling(get_all_servo_ids())
-servo_bus.lock_all(get_all_servo_ids())
+if RUN_MODE == "test":
+    # 仅锁定底盘转向和相机；机械臂与夹爪保持上电、释放扭矩，供人工调整。
+    servo_bus.reset_turns_polling(get_test_locked_servo_ids())
+    servo_bus.lock_all(get_test_locked_servo_ids())
+    for _servo_id in get_test_released_servo_ids():
+        servo_bus.disable(_servo_id)
+else:
+    servo_bus.reset_turns_polling(get_all_servo_ids())
+    servo_bus.lock_all(get_all_servo_ids())
 servo_control = ServoControl(servo_bus)
-servo_control.init_reserve_servos()
+if RUN_MODE != "test":
+    servo_control.init_reserve_servos()
 arm = RobotArm(servo_control)
 rover = LunarRover(motor_bus, servo_control, arm=arm)
 
@@ -154,18 +165,35 @@ def receive_vision(serial):
 
 
 def main():
-    rover.prepare()
-    if RUN_MODE != "ps2":
+    if RUN_MODE == "idle":
+        rover.prepare()
         print("RUN_MODE不是ps2，车辆保持停车")
         while True:
             rover.stop()
             time.sleep_ms(500)
+    if RUN_MODE not in ("ps2", "test"):
+        print("RUN_MODE无效：%s，车辆保持停车" % str(RUN_MODE))
+        rover.disable()
+        while True:
+            rover.stop()
+            time.sleep_ms(500)
+    if RUN_MODE == "test":
+        # 不调用 rover.prepare()：它会向机械臂发送位置目标。
+        rover.center_chassis_servos()
+        servo_control.set_camera_angle(CAMERA_VISION_ANGLE_DEG)
+        arm.camera_angle_deg = CAMERA_VISION_ANGLE_DEG
+        rover.disable()
+    else:
+        rover.prepare()
     controller = PS2Controller(di=PS2_DI, do=PS2_DO, cs=PS2_CS, clk=PS2_CLK)
     controller.init_vibration()
     ps2 = PS2Receiver(controller, 30, True)
     ps2.start()
     try:
-        ps2_loop(rover, ps2, camera_data, camera_uart)
+        if RUN_MODE == "test":
+            test_loop(rover, ps2, camera_data, camera_uart)
+        else:
+            ps2_loop(rover, ps2, camera_data, camera_uart)
     finally:
         ps2.stop()
         rover.disable()

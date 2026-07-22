@@ -250,37 +250,42 @@ class AutonomousDockTests(unittest.TestCase):
         self.assertEqual("stop", self.rover.calls[-1][0])
 
     def test_board_dock_and_uncalibrated_arm_safety_lock(self):
-        set_qr(self.data, 1, "blue")
-        self.controller.observe_qr(self.data)
-        self.controller.start_dock(self.data)
-        self.finish_camera_settle()
+        original_calibrated = auto_module.ARM_GRID_CALIBRATED
+        auto_module.ARM_GRID_CALIBRATED = False
+        try:
+            set_qr(self.data, 1, "blue")
+            self.controller.observe_qr(self.data)
+            self.controller.start_dock(self.data)
+            self.finish_camera_settle()
 
-        self.data["board"] = board_packet(1, self.now)
-        self.controller.update(self.data)
-        self.assertEqual("ground_align", self.controller.mode)
-
-        for sequence in range(2, 2 + auto_module.AUTO_GROUND_ALIGN_STABLE_OBSERVATIONS):
-            self.now += 10
-            self.data["board"] = board_packet(sequence, self.now)
+            self.data["board"] = board_packet(1, self.now)
             self.controller.update(self.data)
-        self.assertEqual("grid_snapshot_wait", self.controller.mode)
-        colors = ("blue", "red", "yellow")
-        self.data["grid_colors"] = {
-            "request_id": self.controller.snapshot_request_id,
-            "vision_seq": 50,
-            "items": tuple({"row": row, "column": column,
-                            "color": colors[column]}
-                           for row in range(3) for column in range(3)),
-            "rx_ms": self.now,
-        }
-        self.data["grid_colors_version"] = 1
-        self.controller.update(self.data)
-        self.rover.servo_control.camera_readback = auto_module.CAMERA_MANUAL_ANGLE_DEG
-        self.finish_camera_settle()
-        self.controller.update(self.data)
-        self.assertEqual("fault", self.controller.mode)
-        self.assertEqual("uncalibrated", self.controller.fault_reason)
-        self.assertTrue(self.controller.active)
+            self.assertEqual("ground_align", self.controller.mode)
+
+            for sequence in range(2, 2 + auto_module.AUTO_GROUND_ALIGN_STABLE_OBSERVATIONS):
+                self.now += 10
+                self.data["board"] = board_packet(sequence, self.now)
+                self.controller.update(self.data)
+            self.assertEqual("grid_snapshot_wait", self.controller.mode)
+            colors = ("blue", "red", "yellow")
+            self.data["grid_colors"] = {
+                "request_id": self.controller.snapshot_request_id,
+                "vision_seq": 50,
+                "items": tuple({"row": row, "column": column,
+                                "color": colors[column]}
+                               for row in range(3) for column in range(3)),
+                "rx_ms": self.now,
+            }
+            self.data["grid_colors_version"] = 1
+            self.controller.update(self.data)
+            self.rover.servo_control.camera_readback = auto_module.CAMERA_MANUAL_ANGLE_DEG
+            self.finish_camera_settle()
+            self.controller.update(self.data)
+            self.assertEqual("fault", self.controller.mode)
+            self.assertEqual("uncalibrated", self.controller.fault_reason)
+            self.assertTrue(self.controller.active)
+        finally:
+            auto_module.ARM_GRID_CALIBRATED = original_calibrated
 
     def test_full_mode_waits_for_new_qr_and_freezes_first_task(self):
         set_qr(self.data, 1, "blue")
