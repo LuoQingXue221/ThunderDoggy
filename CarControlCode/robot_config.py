@@ -83,7 +83,7 @@ BASE_SERVO_IDS = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11)
 CAMERA_SERVO_ID = 8
 """相机云台舵机 ID；该 ID 来自实际舵机配置，非更换硬件或重新编号时不要修改。"""
 
-RESERVE_SERVO_ENABLED = False
+RESERVE_SERVO_ENABLED = True
 """是否初始化并允许控制预留舵机；未安装预留舵机时必须保持 False。"""
 RESERVE_SERVO_IDS = (14,)
 """预留舵机 ID 元组；启用后可配置一个或多个 ID，例如 (13, 14)。"""
@@ -91,9 +91,9 @@ RESERVE_SERVO_SIGNS = {14: 1}
 """每个预留舵机的方向系数：1 表示同向，-1 表示反向；键必须对应预留舵机 ID。"""
 RESERVE_SERVO_INIT_ANGLE_DEG = {14: 0.0}
 """每个预留舵机上电初始化的逻辑角度，单位度；键必须对应预留舵机 ID。"""
-RESERVE_SERVO_MIN_DEG = {14: -90.0}
+RESERVE_SERVO_MIN_DEG = {14: 0.0}
 """每个预留舵机允许的最小逻辑角度，单位度；用于限制控制命令以保护机构。"""
-RESERVE_SERVO_MAX_DEG = {14: 90.0}
+RESERVE_SERVO_MAX_DEG = {14: 35.0}
 """每个预留舵机允许的最大逻辑角度，单位度；必须大于或等于对应最小角度。"""
 
 STEER_ANGLE_MIN_DEG = -90.0
@@ -209,22 +209,39 @@ AUTO_GRID_DOCK_STABLE_OBSERVATIONS = 5
 AUTO_GRID_SETTLE_MS = 500
 AUTO_GRID_LAYOUT_STABLE_OBSERVATIONS = 3
 AUTO_GRID_TARGET_TIMEOUT_MS = 6000
+AUTO_GRID_SNAPSHOT_TIMEOUT_MS = 3000
+"""对正完成后等待相机重新采集稳定九宫格颜色快照的最长时间。"""
+AUTO_GRID_SNAPSHOT_RETRY_MS = 500
+"""等待颜色快照期间重发同一请求ID的间隔。"""
 AUTO_BOARD_ACQUIRE_TIMEOUT_MS = 5000
 """手动巡线后启动局部自动时，停车等待白纸出现的最长时间。"""
 AUTO_BOARD_TIMEOUT_MS = 1500
 
 # 九宫格自动对正（由 START 完整自动或 L3 局部自动流程进入）。
-AUTO_GROUND_ALIGN_TIMEOUT_MS = 20000
+AUTO_GROUND_ALIGN_TIMEOUT_MS = 30000
+"""九宫格自动对正总时限；低速移动下保留足够收敛时间。"""
+AUTO_GROUND_REACQUIRE_TIMEOUT_MS = 3000
+"""完整九宫格短暂消失时停车等待重捕获的最长时间。"""
+AUTO_GROUND_SEARCH_MIN_BLOCKS = 6
+AUTO_GROUND_SEARCH_INITIAL_WAIT_MS = 300
+AUTO_GROUND_SEARCH_SPEED_RAD_S = 0.16
+AUTO_GROUND_SEARCH_PULSE_MS = 120
+AUTO_GROUND_SEARCH_SETTLE_MS = 450
+AUTO_GROUND_SEARCH_MAX_PULSES = 3
+"""丢失完整九宫格时的安全前移搜索：仅凭至少六个真实候选，限次执行。"""
 AUTO_GROUND_ALIGN_STABLE_OBSERVATIONS = 5
 AUTO_GROUND_ALIGN_X_DEADZONE_PX_640 = 5
 AUTO_GROUND_ALIGN_CENTER_Y_DEADZONE_PX_480 = 5
+AUTO_GROUND_ALIGN_RELAXED_X_DEADZONE_PX_640 = 8
+AUTO_GROUND_ALIGN_RELAXED_CENTER_Y_DEADZONE_PX_480 = 12
+AUTO_GROUND_ALIGN_RELAXED_STABLE_OBSERVATIONS = 10
+"""严格区优先5帧完成；底盘无法继续微调时，实用区稳定10帧也可完成。"""
 AUTO_GROUND_ALIGN_BOTTOM_DEADZONE_PX_480 = 12
 AUTO_GROUND_ALIGN_MARGIN_X_PX_640 = 12
 AUTO_GROUND_ALIGN_MARGIN_Y_PX_480 = 12
 AUTO_GROUND_ALIGN_BOTTOM_RATIO_X1000 = 900
 AUTO_GROUND_ALIGN_ANGLE_DEADZONE_X10 = 10
 AUTO_GROUND_ALIGN_TRANSLATE_SPEED_RAD_S = 0.16
-AUTO_GROUND_ALIGN_SEARCH_SPEED_RAD_S = 0.13
 AUTO_GROUND_ALIGN_PIVOT_SPEED_RAD_S = 0.14
 # 若第一次实车测试发现旋转方向相反，只改为 -1，不要改控制流程。
 AUTO_GROUND_ALIGN_PIVOT_SIGN = 1
@@ -244,28 +261,42 @@ AUTO_GRID_REFERENCE_PERSPECTIVE_TOLERANCE_X1000 = 60
 
 
 # =============================================================================
-# 九宫格固定机械臂动作表
+# 九宫格固定机械臂动作表（当前启用前两行，第三行预留）
 # =============================================================================
 
 ARM_GRID_CALIBRATED = False
-"""九个格子的关节角全部实测填好后才能改True；False时拒绝驱动机械臂。"""
+"""六个已配置格位完成受控实机验证后才能改True；False时拒绝驱动机械臂。"""
+ARM_GRID_ACTION_MODE = "grab"
+"""自动动作使用grab：悬停->夹取->闭爪->悬停->料斗->开爪。"""
 ARM_GRID_MOVE_SPEED_DEG_S = 20.0
 """自动机械臂动作速度，保持低速。"""
-ARM_GRID_HOME_WAIT_MS = 1800
-ARM_GRID_GRAB_WAIT_MS = 700
+ARM_GRID_MOVE_SETTLE_MS = 250
+"""按角度差估算运动时间后追加的机械结构稳定时间。"""
+ARM_GRIPPER_SERVO_ID = 14
+ARM_GRIPPER_CLOSED_DEG = 0.0
+ARM_GRIPPER_OPEN_DEG = 35.0
+ARM_GRIPPER_SPEED_DEG_S = 60.0
+ARM_GRIPPER_SETTLE_MS = 250
+ARM_HOPPER_POSE = (3.9, 5.4, 70.5, 137.1)
 
-# 每一项都必须填写四关节绝对角度：(Roll, Pitch1, Pitch2, Pitch3)。
+# hover/grab 都使用四关节绝对角度：(Roll, Pitch1, Pitch2, Pitch3)。
 # row=0是画面上方远处，row=2是画面下方近处；column=0/1/2为左/中/右。
-# 在九格实测完成之前保持None，程序会通过@GRAB_FAIL明确报告“uncalibrated”。
+# 未填写的格位不会进入抓取队列；全局安全锁未解除时仍报告“uncalibrated”。
 ARM_GRID_POSES = {
-    (0, 0): None,
-    (0, 1): None,
-    (0, 2): None,
-    (1, 0): None,
-    (1, 1): None,
-    (1, 2): None,
-    (2, 0): None,
-    (2, 1): None,
-    (2, 2): None,
+    (0, 0): {"hover": (13.9, -49.0, -90.8, 4.2),
+             "grab": (13.8, -70.7, -88.1, 14.3)},
+    (0, 1): {"hover": (-8.3, -39.3, -92.8, -3.5),
+             "grab": (-4.3, -63.5, -88.8, 14.5)},
+    (0, 2): {"hover": (-24.5, -44.9, -89.1, -5.3),
+             "grab": (-24.5, -64.9, -85.3, 16.5)},
+    (1, 0): {"hover": (17.0, -51.8, -106.1, 18.3),
+             "grab": (13.0, -65.6, -102.4, 28.1)},
+    (1, 1): {"hover": (-8.4, -41.7, -115.8, 18.2),
+             "grab": (-4.6, -59.8, -113.9, 40.0)},
+    (1, 2): {"hover": (-30.5, -39.0, -111.4, 16.3),
+             "grab": (-30.6, -61.2, -107.6, 30.3)},
+    (2, 0): {"hover": None, "grab": None},
+    (2, 1): {"hover": None, "grab": None},
+    (2, 2): {"hover": None, "grab": None},
 }
 

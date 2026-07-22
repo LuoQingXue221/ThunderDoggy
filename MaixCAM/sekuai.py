@@ -13,7 +13,7 @@ COLORS = (
     # 只提取高饱和红色顶面，避免红块与背景相接时合并为巨大色块。
     ("red", [[18, 48, 35, 60, 10, 45]], image.COLOR_RED),
     ("yellow", [[25, 100, -16, 20, 12, 88]], image.COLOR_YELLOW),
-    ("blue", [[3, 95, -36, 22, -100, -7]], image.COLOR_BLUE),
+    ("blue", [[3, 95, -36, 22, -100, -14]], image.COLOR_BLUE),
     ("pink", [[25, 100, 6, 36, -20, 30]], image.COLOR_RED),
     ("purple", [[-7, 42, 5, 42, -36, 4]], image.COLOR_BLUE),
 )
@@ -37,8 +37,8 @@ def detect_ground(img):
     return {"x": b[0], "y": b[1], "w": b[2], "h": b[3]}
 
 
-def _white_supported(img, item):
-    """旋转无关的白纸环形投票，允许远处顶面和一个方向的阴影。"""
+def _white_support(img, item):
+    """返回色块周围的白纸支撑强度；边缘弱候选由九宫格几何二次确认。"""
     fw, fh = _size(img)
     x, y, w, h = item["x"], item["y"], item["w"], item["h"]
     gap = max(8, min(w, h) // 3)
@@ -57,8 +57,24 @@ def _white_supported(img, item):
         px = int(cx + (w / 2.0 + gap) * math.cos(angle))
         py = int(cy + (h / 2.0 + gap) * math.sin(angle))
         ring.append(white(px, py))
+    # 白区连通块的外接矩形会包含斜放白纸四角外的地面，不能只依赖 ROI。
+    # 实地图中错误黄色地面只有 8/16 个白色支撑点，而三个真实黄色块
+    # 分别为 13/16、11/16、15/16；同时真实块四个方向均能找到白纸。
+    quadrants = [sum(ring[index:index + 4]) for index in (0, 4, 8, 12)]
     opposite = any(ring[index] and ring[index + 8] for index in range(8))
-    return sum(ring) >= 5 and opposite
+    return sum(ring), quadrants, opposite
+
+
+def _white_supported(img, item):
+    """强白纸支撑：用于普通候选，拒绝白纸外的浅色地面。"""
+    count, quadrants, opposite = _white_support(img, item)
+    return count >= 9 and min(quadrants) >= 1 and opposite
+
+
+def _weak_white_supported(img, item):
+    """远端白纸边缘的弱支撑，不能直接显示或控制，只能由列几何救回。"""
+    count, quadrants, opposite = _white_support(img, item)
+    return count >= 5 and sum(1 for value in quadrants if value) >= 2 and opposite
 
 
 def _color_counts(items):
@@ -77,68 +93,21 @@ def _draw_color(name, fallback):
     return fallback
 
 
-def _force_grid_color_counts(items):
-    """Repair a nine-block color split to three distinct colors of three blocks.
+def _median(values):
+    values = sorted(values)
+    return values[len(values) // 2]
 
-    Competition grids use one color per spatial column.  When threshold overlap
-    mislabels one or two blocks, choose the distinct color assignment with the
-    strongest per-column vote, recolor the whole column, then require the normal
-    3x3 geometry validator to accept the repaired result.  Missing blocks,
-    surplus candidates, fewer than three observed colors, and non-grid layouts
-    are deliberately not fabricated.
-    """
-    if len(items) != 9:
-        return None
-    counts = _color_counts(items)
-    if len(counts) == 3 and sorted(counts.values()) == [3, 3, 3]:
+
+def _adaptive_size_filter(items):
+    """按同帧真实块的典型尺寸剔除远处小阴影，不改变绝对尺寸限制。"""
+    if len(items) < 6:
         return items
-    colors = list(counts)
-    if len(colors) < 3:
-        return None
-
-    # At the calibrated oblique camera pose the three grid columns remain
-    # separated on X.  The full rotation-independent geometry check below is
-    # still the final authority, so a bad X grouping cannot become valid data.
-    ordered = sorted(items, key=lambda value: value["cx"])
-    columns = [sorted(ordered[index:index + 3], key=lambda value: value["cy"])
-               for index in (0, 3, 6)]
-    best = None
-    for left in colors:
-        for middle in colors:
-            if middle == left:
-                continue
-            for right in colors:
-                if right == left or right == middle:
-                    continue
-                assignment = (left, middle, right)
-                votes = [sum(1 for item in column if item["color"] == name)
-                         for column, name in zip(columns, assignment)]
-                # Never invent a column color that has no supporting detection.
-                if min(votes) == 0:
-                    continue
-                pixels = sum(item.get("pixels", 0)
-                             for column, name in zip(columns, assignment)
-                             for item in column if item["color"] == name)
-                score = (sum(votes), pixels)
-                if best is None or score > best[0]:
-                    best = (score, assignment)
-    if best is None:
-        return None
-
-    repaired = []
-    for column, name in zip(columns, best[1]):
-        for source in column:
-            item = source.copy()
-            if item["color"] != name:
-                item["original_color"] = item["color"]
-                item["color"] = name
-                item["draw_color"] = _draw_color(name, item["draw_color"])
-                item["color_forced"] = 1
-            repaired.append(item)
-    repaired_counts = _color_counts(repaired)
-    if len(repaired_counts) != 3 or sorted(repaired_counts.values()) != [3, 3, 3]:
-        return None
-    return repaired if _select_grid(repaired) else None
+    reference = sorted(items, key=lambda v: v["pixels"], reverse=True)[:9]
+    typical_side = _median([min(v["w"], v["h"]) for v in reference])
+    typical_area = _median([v["w"] * v["h"] for v in reference])
+    return [v for v in items
+            if min(v["w"], v["h"]) * 100 >= typical_side * 48
+            and v["w"] * v["h"] * 100 >= typical_area * 25]
 
 
 def detect_blocks(img, ground=None):
@@ -172,15 +141,23 @@ def detect_blocks(img, ground=None):
                    abs(item["cy"] - old["cy"]) * 3 < max(item["h"], old["h"]) * 2
                    for old in unique):
             unique.append(item)
-    # 先去重再做像素采样，减少每帧 get_pixel 调用次数。
-    unique = [item for item in unique if _white_supported(img, item)]
-    repaired = _force_grid_color_counts(unique)
-    if repaired is not None:
-        unique = repaired
-    completed = _infer_missing_blocks(unique)
-    selected = _select_grid(completed)
+    # 先去重和尺寸自适应过滤，再做像素采样，减少每帧 get_pixel 调用次数。
+    unique = _adaptive_size_filter(unique)
+    strong, weak = [], []
+    for item in unique:
+        if _white_supported(img, item):
+            strong.append(item)
+        elif _weak_white_supported(img, item):
+            weak.append(item)
+    # 弱候选不会单独显示；仅在两块同色强候选的远端延长线上才可恢复。
+    strong = _rescue_edge_candidates(strong, weak)
+    selected = _select_grid(strong)
+    if not selected:
+        selected = _complete_grid(strong)
+    if not selected:
+        selected = _complete_far_row(strong)
     # 调试显示允许返回不完整候选；车控是否可用仍只由 board.complete 决定。
-    return selected if selected else unique[:9]
+    return selected if selected else strong[:9]
 
 
 def _inferred_item(sample, x, y):
@@ -190,41 +167,253 @@ def _inferred_item(sample, x, y):
             "cx": int(x), "cy": int(y), "inferred": 1}
 
 
-def _infer_missing_blocks(items):
-    """两列完整且第三列已有两个同色块时，按3x3投影补出缺失点。"""
-    if len(items) != 8:
-        return items
+def _rescue_edge_candidates(strong, weak):
+    """只救回位于同色两块远端等距外推位置的白纸边缘候选。"""
+    groups = {}
+    for item in strong:
+        groups.setdefault(item["color"], []).append(item)
+    result = list(strong)
+    for color, values in groups.items():
+        if len(values) != 2:
+            continue
+        top, bottom = sorted(values, key=lambda value: value["cy"])
+        vx, vy = bottom["cx"] - top["cx"], bottom["cy"] - top["cy"]
+        spacing = math.sqrt(vx * vx + vy * vy)
+        if spacing < max(10, min(top["w"], top["h"])):
+            continue
+        expected_x, expected_y = top["cx"] - vx, top["cy"] - vy
+        unit = _median([min(top["w"], top["h"]), min(bottom["w"], bottom["h"])])
+        best = None
+        for item in weak:
+            if item["color"] != color or item["cy"] >= top["cy"]:
+                continue
+            distance = math.sqrt((item["cx"] - expected_x) ** 2 +
+                                 (item["cy"] - expected_y) ** 2)
+            size = min(item["w"], item["h"])
+            if distance > spacing * .48 or size * 100 < unit * 45 or size > unit * 150:
+                continue
+            if best is None or distance < best[0]:
+                best = (distance, item)
+        if best is not None:
+            item = best[1].copy()
+            item["edge_rescued"] = 1
+            result.append(item)
+    return result
+
+
+def _complete_far_row(items):
+    """三列各有两块同色时，仅按严格几何关系补出同一条远端行。"""
+    if len(items) != 6:
+        return []
     groups = {}
     for item in items:
         groups.setdefault(item["color"], []).append(item)
-    if sorted(len(v) for v in groups.values()) != [2, 3, 3]:
-        return items
-    full = [sorted(v, key=lambda p: p["cy"]) for v in groups.values() if len(v) == 3]
-    partial = next(v for v in groups.values() if len(v) == 2)
-    full.sort(key=lambda v: sum(p["cx"] for p in v))
-    left, right = full
-    lx = sum(p["cx"] for p in left) / 3.0
-    rx = sum(p["cx"] for p in right) / 3.0
-    px = sum(p["cx"] for p in partial) / 2.0
-    if abs(rx - lx) < 8:
-        return items
-    ratio = (px - lx) / (rx - lx)
-    if ratio < -1.35 or ratio > 2.35:
-        return items
-    predicted = [(left[r]["cx"] + ratio * (right[r]["cx"] - left[r]["cx"]),
-                  left[r]["cy"] + ratio * (right[r]["cy"] - left[r]["cy"])) for r in range(3)]
+    if len(groups) != 3 or any(len(values) != 2 for values in groups.values()):
+        return []
+    unit = max(5, _median([min(item["w"], item["h"]) for item in items]))
+    columns = []
+    for name, values in groups.items():
+        top, bottom = sorted(values, key=lambda value: value["cy"])
+        vx, vy = bottom["cx"] - top["cx"], bottom["cy"] - top["cy"]
+        length = math.sqrt(vx * vx + vy * vy)
+        if length < unit:
+            return []
+        columns.append((name, top, bottom, vx, vy, length))
+    lengths = [column[5] for column in columns]
+    if max(lengths) * 10 > min(lengths) * 15:
+        return []
+    # 同列方向必须平行且同向，避免把随机的六个色块误当成九宫格。
+    for index in range(1, 3):
+        ax, ay, alen = columns[0][3], columns[0][4], columns[0][5]
+        bx, by, blen = columns[index][3], columns[index][4], columns[index][5]
+        if ax * bx + ay * by <= 0 or abs(ax * by - ay * bx) * 10 > alen * blen * 3:
+            return []
+    columns.sort(key=lambda column: (column[1]["cx"] + column[2]["cx"]) / 2.0)
+    mids = [((column[1]["cx"] + column[2]["cx"]) / 2.0,
+             (column[1]["cy"] + column[2]["cy"]) / 2.0) for column in columns]
+    hx1, hy1 = mids[1][0] - mids[0][0], mids[1][1] - mids[0][1]
+    hx2, hy2 = mids[2][0] - mids[1][0], mids[2][1] - mids[1][1]
+    hd1, hd2 = math.sqrt(hx1 * hx1 + hy1 * hy1), math.sqrt(hx2 * hx2 + hy2 * hy2)
+    vx = sum(column[3] for column in columns) / 3.0
+    vy = sum(column[4] for column in columns) / 3.0
+    vlen = math.sqrt(vx * vx + vy * vy)
+    if (min(hd1, hd2) < unit or max(hd1, hd2) * 10 > min(hd1, hd2) * 15 or
+            abs(hx1 * hy2 - hy1 * hx2) * 10 > hd1 * hd2 * 3 or
+            abs((hx1 + hx2) * vx + (hy1 + hy2) * vy) * 10 > (hd1 + hd2) * vlen * 5):
+        return []
+    completed = []
+    for name, top, bottom, column_vx, column_vy, _ in columns:
+        sample = top.copy()
+        sample["w"] = _median([top["w"], bottom["w"]])
+        sample["h"] = _median([top["h"], bottom["h"]])
+        sample["color"] = name
+        sample["draw_color"] = _draw_color(name, sample["draw_color"])
+        completed.append(_inferred_item(sample, top["cx"] - column_vx,
+                                        top["cy"] - column_vy))
+        completed.extend([top, bottom])
+    return _select_grid(completed)
+
+
+def _match_lattice(items, origin, horizontal, vertical):
+    """把候选唯一匹配到九个格位，返回格位映射和均方重投影误差。"""
+    hlen = math.sqrt(horizontal[0] ** 2 + horizontal[1] ** 2)
+    vlen = math.sqrt(vertical[0] ** 2 + vertical[1] ** 2)
+    limit = min(hlen, vlen) * .45
+    cells = [(row, col, origin[0] + col * horizontal[0] + row * vertical[0],
+              origin[1] + col * horizontal[1] + row * vertical[1])
+             for row in range(3) for col in range(3)]
+    choices = []
+    for index, item in enumerate(items):
+        for row, col, x, y in cells:
+            distance = math.sqrt((item["cx"] - x) ** 2 + (item["cy"] - y) ** 2)
+            if distance <= limit:
+                choices.append((distance, index, row, col))
+    choices.sort(key=lambda value: value[0])
+    used_items, used_cells, matches = set(), set(), {}
+    error = 0.0
+    for distance, index, row, col in choices:
+        cell = (row, col)
+        if index in used_items or cell in used_cells:
+            continue
+        used_items.add(index)
+        used_cells.add(cell)
+        matches[cell] = items[index]
+        error += distance * distance
+    if not matches:
+        return {}, 1e9
+    return matches, error / len(matches)
+
+
+def _column_colors(matches):
+    """按封顶像素权重给三列分配互不相同的颜色。"""
+    observed = [item for item in matches.values() if item.get("pixels", 0) > 0]
+    names = list(_color_counts(observed))
+    if len(names) < 3:
+        return None
+    cap = _median([item["pixels"] for item in observed])
+    votes = {}
+    for col in range(3):
+        for name in names:
+            votes[(col, name)] = sum(min(cap, item["pixels"])
+                                     for (row, c), item in matches.items()
+                                     if c == col and item["color"] == name)
     best = None
-    for missing in range(3):
-        rows = [r for r in range(3) if r != missing]
-        for a, b in ((partial[0], partial[1]), (partial[1], partial[0])):
-            error = sum((p["cx"] - predicted[r][0]) ** 2 +
-                        (p["cy"] - predicted[r][1]) ** 2 for p, r in ((a, rows[0]), (b, rows[1])))
-            if best is None or error < best[0]:
-                best = (error, missing)
-    unit = sorted(min(v["w"], v["h"]) for v in items)[len(items) // 2]
-    if best is None or best[0] > 2 * (unit * 1.7) ** 2:
-        return items
-    return items + [_inferred_item(partial[0], *predicted[best[1]])]
+    for left in names:
+        for middle in names:
+            if middle == left:
+                continue
+            for right in names:
+                if right == left or right == middle:
+                    continue
+                assignment = (left, middle, right)
+                values = [votes[(col, assignment[col])] for col in range(3)]
+                if min(values) <= 0:
+                    continue
+                score = sum(values)
+                if best is None or score > best[0]:
+                    best = (score, assignment)
+    return None if best is None else best[1]
+
+
+def _build_completed_grid(matches, origin, horizontal, vertical):
+    assignment = _column_colors(matches)
+    if assignment is None:
+        return []
+    completed = []
+    for row in range(3):
+        for col in range(3):
+            name = assignment[col]
+            source = matches.get((row, col))
+            if source is not None:
+                item = source.copy()
+                if item["color"] != name:
+                    item["original_color"] = item["color"]
+                    item["color"] = name
+                    item["draw_color"] = _draw_color(name, item["draw_color"])
+                    item["color_forced"] = 1
+                completed.append(item)
+                continue
+            samples = [item for (r, c), item in matches.items() if c == col]
+            if not samples:
+                return []
+            sample = samples[0].copy()
+            sample["color"] = name
+            sample["draw_color"] = _draw_color(name, sample["draw_color"])
+            sample["w"] = _median([item["w"] for item in samples])
+            sample["h"] = _median([item["h"] for item in samples])
+            x = origin[0] + col * horizontal[0] + row * vertical[0]
+            y = origin[1] + col * horizontal[1] + row * vertical[1]
+            completed.append(_inferred_item(sample, x, y))
+    if sorted(_color_counts(completed).values()) != [3, 3, 3]:
+        return []
+    return _select_grid(completed)
+
+
+def _complete_grid(items):
+    """由至少七个真实点重建旋转3x3，最多预测两个缺失格。"""
+    if len(items) < 7:
+        return []
+    # 误检可能使候选略多；仅保留最可信的十二个以控制实时开销。
+    items = sorted(items, key=lambda v: v["pixels"], reverse=True)[:12]
+    unit = max(5, _median([min(v["w"], v["h"]) for v in items]))
+    groups = {}
+    for item in items:
+        groups.setdefault(item["color"], []).append(item)
+    bases = []
+    for values in groups.values():
+        if len(values) >= 3:
+            bases.extend(_column_hypotheses(values, unit))
+    bases.sort(key=lambda value: value[0])
+    best = None
+    for base_error, raw_column in bases[:12]:
+        column = sorted(raw_column, key=lambda value: value["cy"])
+        vertical = ((column[2]["cx"] - column[0]["cx"]) / 2.0,
+                    (column[2]["cy"] - column[0]["cy"]) / 2.0)
+        vlen = math.sqrt(vertical[0] ** 2 + vertical[1] ** 2)
+        if vlen < unit:
+            continue
+        base_ids = set(id(value) for value in column)
+        step_candidates = {}
+        quant = max(4, unit // 4)
+        for base_col in range(3):
+            for item in items:
+                if id(item) in base_ids:
+                    continue
+                dx = item["cx"] - column[0]["cx"]
+                dy = item["cy"] - column[0]["cy"]
+                row = int(round((dx * vertical[0] + dy * vertical[1]) / (vlen * vlen)))
+                if row < 0 or row > 2:
+                    continue
+                row_x = column[0]["cx"] + row * vertical[0]
+                row_y = column[0]["cy"] + row * vertical[1]
+                for target_col in range(3):
+                    delta_col = target_col - base_col
+                    if not delta_col:
+                        continue
+                    horizontal = ((item["cx"] - row_x) / delta_col,
+                                  (item["cy"] - row_y) / delta_col)
+                    hlen = math.sqrt(horizontal[0] ** 2 + horizontal[1] ** 2)
+                    if (horizontal[0] <= 0 or hlen < vlen * .65 or hlen > vlen * 2.8 or
+                            abs(horizontal[0] * vertical[0] + horizontal[1] * vertical[1])
+                            > hlen * vlen * .55):
+                        continue
+                    key = (base_col, int(horizontal[0] / quant), int(horizontal[1] / quant))
+                    step_candidates[key] = horizontal
+        for (base_col, _, _), horizontal in step_candidates.items():
+            origin = (column[0]["cx"] - base_col * horizontal[0],
+                      column[0]["cy"] - base_col * horizontal[1])
+            matches, reprojection = _match_lattice(items, origin, horizontal, vertical)
+            if (len(matches) < 7 or len(matches) > 9 or
+                    len(set(row for row, col in matches)) < 3 or
+                    len(set(col for row, col in matches)) < 3):
+                continue
+            completed = _build_completed_grid(matches, origin, horizontal, vertical)
+            if not completed:
+                continue
+            score = (-len(matches), reprojection, base_error)
+            if best is None or score < best[0]:
+                best = (score, completed)
+    return [] if best is None else best[1]
 
 
 def _point(u, n, s, t):

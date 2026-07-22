@@ -35,6 +35,9 @@ import time
 from arm_control import ArmKinematicsError
 from autonomous_control import AutonomousController, describe_reason
 from robot_config import (
+    ARM_GRIPPER_CLOSED_DEG,
+    ARM_GRIPPER_OPEN_DEG,
+    ARM_GRIPPER_SERVO_ID,
     CAMERA_MANUAL_ANGLE_DEG,
     MAX_MOTOR_RPM,
     PIVOT_SPEED_SCALE,
@@ -52,11 +55,11 @@ _CAMERA_JOG_STEP_DEG = 8
 _CHASSIS_DEADZONE_PCT = 15
 
 # 夹爪状态
-_gripper_angle_deg = 0.0
+_gripper_angle_deg = ARM_GRIPPER_CLOSED_DEG
 _GRIPPER_STEP_DEG = 5.0
-_GRIPPER_MIN_DEG = -90.0
-_GRIPPER_MAX_DEG = 90.0
-_GRIPPER_SERVO_ID = 14
+_GRIPPER_MIN_DEG = min(ARM_GRIPPER_CLOSED_DEG, ARM_GRIPPER_OPEN_DEG)
+_GRIPPER_MAX_DEG = max(ARM_GRIPPER_CLOSED_DEG, ARM_GRIPPER_OPEN_DEG)
+_GRIPPER_SERVO_ID = ARM_GRIPPER_SERVO_ID
 _gripper_warned = False
 
 _last_arm_error_key = None
@@ -240,7 +243,7 @@ def ps2_loop(rover, ps2, data, serial):
                 rover.servo_control.set_camera_angle(CAMERA_MANUAL_ANGLE_DEG)
                 rover.arm.camera_angle_deg = CAMERA_MANUAL_ANGLE_DEG
             rover.center_chassis_servos()
-            _gripper_angle_deg = 0.0
+            _gripper_angle_deg = ARM_GRIPPER_CLOSED_DEG
             _set_gripper_angle(rover, 0.0)
             print("L3+R3：全部舵机已复位。")
             time.sleep_ms(500)
@@ -323,9 +326,9 @@ def ps2_loop(rover, ps2, data, serial):
         # 夹爪控制
         # ======================================================================
         if button_pressed(buttons, ps2.PS2_BTN_SQUARE):
-            _set_gripper_angle(rover, _GRIPPER_STEP_DEG)
-        if button_pressed(buttons, ps2.PS2_BTN_CIRCLE):
             _set_gripper_angle(rover, -_GRIPPER_STEP_DEG)
+        if button_pressed(buttons, ps2.PS2_BTN_CIRCLE):
+            _set_gripper_angle(rover, _GRIPPER_STEP_DEG)
 
         # ======================================================================
         # 机械臂关节控制（各按键可同时生效）

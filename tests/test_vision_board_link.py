@@ -111,7 +111,7 @@ class BoardLinkTests(unittest.TestCase):
         changed = apply_vision_message(data, parse_vision_message(raw), raw)
         self.assertTrue(changed)
         self.assertTrue(data["vision_online"])
-        self.assertEqual(1, data["status"]["protocol"])
+        self.assertEqual(chuankou.PROTOCOL_VERSION, data["status"]["protocol"])
         self.assertFalse(vision_link_timed_out(data, 2500, data["last_rx_ms"] + 2500))
         self.assertTrue(vision_link_timed_out(data, 2500, data["last_rx_ms"] + 2501))
 
@@ -154,6 +154,36 @@ class BoardLinkTests(unittest.TestCase):
         self.assertFalse(apply_vision_message(data, parse_vision_message(retry), retry))
         self.assertEqual(1, data["qr_version"])
         self.assertEqual(2, data["rx_frames"])
+
+    def test_grid_colors_round_trip_is_explicit_and_deduplicated(self):
+        link = sender()
+        layout = ("yellow", "red", "blue") * 3
+        link.send_grid_colors(7, 42, layout)
+        raw = link.uart.text.strip()
+        message = parse_vision_message(raw)
+        data = new_camera_data()
+
+        self.assertTrue(apply_vision_message(data, message, raw))
+        self.assertEqual(7, data["grid_colors"]["request_id"])
+        self.assertEqual(
+            [(0, 0, "yellow"), (0, 1, "red"), (0, 2, "blue"),
+             (1, 0, "yellow"), (1, 1, "red"), (1, 2, "blue"),
+             (2, 0, "yellow"), (2, 1, "red"), (2, 2, "blue")],
+            [(item["row"], item["column"], item["color"])
+             for item in data["grid_colors"]["items"]],
+        )
+        self.assertFalse(apply_vision_message(data, message, raw))
+        self.assertEqual(1, data["grid_colors_version"])
+
+    def test_grid_colors_rejects_duplicate_coordinate(self):
+        fields = ["@GRID_COLORS", "1", "2", "9"]
+        for index in range(9):
+            row, column = divmod(index, 3)
+            if index == 8:
+                row, column = 0, 0
+            fields += [str(row), str(column), "blue"]
+        with self.assertRaises(ValueError):
+            parse_vision_message(",".join(fields))
 
     def test_qr_reader_retries_until_matching_ack(self):
         reader = qr_module.QRReader(stable_required=2, retry_detections=2)

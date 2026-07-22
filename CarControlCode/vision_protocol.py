@@ -16,11 +16,12 @@ def _ticks_diff(a, b):
 def new_camera_data():
     started = _now()
     return {"qr": None, "line": None, "blocks": None, "board": None,
+            "grid_colors": None,
             "calibration": None,
             "status": None,
             "target": None, "qr_version": 0, "line_version": 0,
             "blocks_version": 0, "board_version": 0, "status_version": 0,
-            "calibration_version": 0,
+            "calibration_version": 0, "grid_colors_version": 0,
             "last_message": "", "last_kind": "", "link_started_ms": started,
             "last_rx_ms": 0, "last_byte_ms": 0, "vision_online": False,
             "rx_frames": 0, "rx_bytes": 0, "rx_errors": 0}
@@ -51,6 +52,36 @@ def parse_vision_message(line):
     if head == "@grid_reference" and len(parts) == 26:
         values = [int(v) for v in parts[1:]]
         return "calibration", {"values": values}
+
+    if head == "@grid_colors":
+        if len(parts) != 31:
+            raise ValueError("GRID_COLORS字段数量错误")
+        request_id, vision_seq, count = (int(v) for v in parts[1:4])
+        if request_id < 0 or vision_seq < 0 or count != 9:
+            raise ValueError("GRID_COLORS头字段错误")
+        items, cells, index = [], set(), 4
+        for _ in range(count):
+            row, column = int(parts[index]), int(parts[index + 1])
+            color = parts[index + 2]
+            index += 3
+            cell = (row, column)
+            if row not in (0, 1, 2) or column not in (0, 1, 2):
+                raise ValueError("GRID_COLORS坐标越界")
+            if cell in cells:
+                raise ValueError("GRID_COLORS坐标重复")
+            if color not in VALID_COLORS:
+                raise ValueError("GRID_COLORS颜色错误")
+            cells.add(cell)
+            items.append({"row": row, "column": column, "color": color})
+        expected = set((row, column) for row in range(3) for column in range(3))
+        if cells != expected:
+            raise ValueError("GRID_COLORS九格不完整")
+        items.sort(key=lambda item: (item["row"], item["column"]))
+        return "grid_colors", {
+            "request_id": request_id,
+            "vision_seq": vision_seq,
+            "items": tuple(items),
+        }
 
     if head == "@line_raw" and len(parts) == 21:
         seq, fw, fh = int(parts[1]), int(parts[2]), int(parts[3])
@@ -122,15 +153,22 @@ def apply_vision_message(data, message, raw_line):
     value["rx_ms"] = now
     duplicate_qr = (kind == "qr" and data.get("qr") is not None
                     and data["qr"].get("payload") == value.get("payload"))
+    duplicate_grid = (
+        kind == "grid_colors" and data.get("grid_colors") is not None and
+        data["grid_colors"].get("request_id") == value.get("request_id") and
+        data["grid_colors"].get("vision_seq") == value.get("vision_seq") and
+        data["grid_colors"].get("items") == value.get("items")
+    )
     data[kind] = value
-    if not duplicate_qr:
+    duplicate = duplicate_qr or duplicate_grid
+    if not duplicate:
         data[kind + "_version"] = data.get(kind + "_version", 0) + 1
     data["last_message"] = raw_line
     data["last_kind"] = kind
     data["last_rx_ms"] = now
     data["vision_online"] = True
     data["rx_frames"] = data.get("rx_frames", 0) + 1
-    return not duplicate_qr
+    return not duplicate
 
 
 def mark_vision_bytes(data, count):
@@ -151,7 +189,7 @@ def vision_link_timed_out(data, timeout_ms, now=None):
 
 
 def format_recognition_result(message):
-    """仅格式化二维码结果；色块帧只缓存，不输出终端日志。"""
+    """格式化二维码或色块调试结果。"""
     if message is None:
         return None
     kind, value = message
@@ -159,4 +197,24 @@ def format_recognition_result(message):
         return "视觉二维码识别: seq=%d, payload=%s" % (
             value["sequence"], value["payload"],
         )
+    if kind == "blocks":
+        parts = []
+        for item in value.get("items", ()):
+            parts.append("%s center=(%d,%d) size=%dx%d pixels=%d" %
+                         (item["color"], item["cx"], item["cy"],
+                          item["w"], item["h"], item["pixels"]))
+        return ("视觉色块识别: seq=%d, %s" %
+                (value["sequence"], "; ".join(parts)))
     return None
+
+
+def blocks_log_signature(packet):
+    """把轻微像素抖动归入同一日志签名，避免调试终端刷屏。"""
+    if packet is None:
+        return ()
+    values = []
+    for item in sorted(packet.get("items", ()),
+                       key=lambda value: (value["color"], value["cx"], value["cy"])):
+        values.append((item["color"], item["cx"] // 8, item["cy"] // 8,
+                       item["w"] // 4, item["h"] // 4, item["pixels"] // 100))
+    return tuple(values)

@@ -107,6 +107,16 @@ def receive_vision(serial):
                                               % (str(ack_written), len(ack)))
                                     if is_new:
                                         print(format_recognition_result(message))
+                                elif kind == "grid_colors":
+                                    ack = ("@GRID_COLORS_ACK,%d,%d\n" %
+                                           (value["request_id"], value["vision_seq"])).encode("utf-8")
+                                    ack_written = serial.write(ack)
+                                    if ack_written is not None and ack_written != len(ack):
+                                        print("九宫格颜色ACK短写: %s/%d" %
+                                              (str(ack_written), len(ack)))
+                                    if is_new:
+                                        print("九宫格颜色快照已接收: request=%d seq=%d" %
+                                              (value["request_id"], value["vision_seq"]))
                                 elif kind == "blocks":
                                     # 保留逐帧解析和缓存，供自动对正使用；终端不再输出色块明细。
                                     pass

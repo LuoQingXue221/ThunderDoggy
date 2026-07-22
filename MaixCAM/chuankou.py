@@ -4,7 +4,7 @@ from maix import uart
 
 DEVICE, BAUD = "/dev/ttyS0", 115200
 PORT_NAME, TX_PIN, RX_PIN = "UART0", "A16", "A17"
-PROTOCOL_VERSION = 3
+PROTOCOL_VERSION = 4
 
 
 class VisionSerial:
@@ -38,6 +38,10 @@ class VisionSerial:
     def send_board(self, sequence, width, height, board):
         if board is None:
             return self.send(["@BOARD_RAW", sequence, width, height, 0] + [0] * 17)
+        if "points" not in board:
+            return self.send(["@BOARD_RAW", sequence, width, height, 1,
+                              board["x"], board["y"], board["w"], board["h"],
+                              board["pixels"]])
         fields = ["@BOARD_RAW", sequence, width, height, 1, board["observed"],
                   board["complete"], board["cx"], board["cy"], board["center_x"],
                   board["center_y"], board["angle_x10"], board["angle_valid"]]
@@ -52,6 +56,15 @@ class VisionSerial:
     def send_grid_reference(self, values):
         """把标定中位数送回 ESP32，再由 ESP32 USB 串口转发给电脑。"""
         return self.send(["@GRID_REFERENCE"] + list(values))
+
+    def send_grid_colors(self, request_id, vision_seq, layout):
+        """发送稳定九宫格的显式(row,column,color)快照。"""
+        if layout is None or len(layout) != 9:
+            raise ValueError("GRID_COLORS布局必须包含9格")
+        fields = ["@GRID_COLORS", int(request_id), int(vision_seq), 9]
+        for index, color in enumerate(layout):
+            fields += [index // 3, index % 3, color]
+        return self.send(fields)
 
     def read_lines(self):
         data = self.uart.read()

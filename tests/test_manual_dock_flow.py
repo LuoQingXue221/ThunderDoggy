@@ -31,6 +31,8 @@ class FakeServoControl:
     def __init__(self):
         self.camera_angles = []
         self.camera_readback = 0.0
+        self.reserve_angle = 35.0
+        self.reserve_commands = []
 
     def set_camera_angle(self, angle, speed_deg_s=None):
         self.camera_angles.append((angle, speed_deg_s))
@@ -38,8 +40,13 @@ class FakeServoControl:
     def read_camera_angle(self):
         return self.camera_readback
 
-    def set_reserve_servo_angle(self, servo_id, angle):
-        pass
+    def set_reserve_servo_angle(self, servo_id, angle, speed_deg_s=None):
+        self.reserve_commands.append((servo_id, angle, speed_deg_s))
+        self.reserve_angle = float(angle)
+        return True
+
+    def read_reserve_servo_angle(self, servo_id):
+        return self.reserve_angle
 
 
 class FakeRobotArm:
@@ -95,11 +102,17 @@ def set_qr(data, version, payload):
     data["qr"] = {"sequence": version, "payload": payload, "rx_ms": 0}
 
 
-def board_packet(sequence, now, x=190, y=40, width=260, height=260):
+def board_packet(sequence, now, x=116, y=90, width=408, height=300):
+    corners = [[x, y], [x + width, y],
+               [x + width, y + height], [x, y + height]]
     return {"sequence": sequence, "frame_w": 640, "frame_h": 480,
             "value": {"x": x, "y": y, "w": width, "h": height,
                       "pixels": width * height, "cx": x + width // 2,
-                      "cy": y + height // 2},
+                      "cy": y + height // 2,
+                      "center_x": x + width // 2,
+                      "center_y": y + height // 2,
+                      "corners": corners, "observed": 9, "complete": True,
+                      "angle_x10": 0, "angle_valid": True},
             "rx_ms": now}
 
 
@@ -164,16 +177,17 @@ class AutonomousDockTests(unittest.TestCase):
         self.finish_camera_settle()
         self.data["board"] = board_packet(1, self.now)
         self.controller.update(self.data)
-        self.assertEqual("dock", self.controller.mode)
+        self.assertEqual("ground_align", self.controller.mode)
 
-        for sequence in range(2, 2 + auto_module.AUTO_GRID_DOCK_STABLE_OBSERVATIONS):
+        for sequence in range(2, 2 + auto_module.AUTO_GROUND_ALIGN_STABLE_OBSERVATIONS):
             self.now += 10
             self.data["board"] = board_packet(sequence, self.now)
             self.controller.update(self.data)
-        self.assertEqual("aligned", self.controller.mode)
-        self.assertTrue(self.controller.active)
+        self.assertEqual("camera_settle", self.controller.mode)
         self.assertFalse(self.rover.motors_enabled)
-        self.assertEqual("disable", self.rover.calls[-1][0])
+        self.rover.servo_control.camera_readback = auto_module.CAMERA_MANUAL_ANGLE_DEG
+        self.finish_camera_settle()
+        self.assertFalse(self.controller.active)
 
     def test_automatic_modes_reject_disabled_drive_motors(self):
         self.rover.motors_enabled = False
@@ -243,41 +257,46 @@ class AutonomousDockTests(unittest.TestCase):
 
         self.data["board"] = board_packet(1, self.now)
         self.controller.update(self.data)
-        self.assertEqual("dock", self.controller.mode)
+        self.assertEqual("ground_align", self.controller.mode)
 
-        for sequence in range(2, 2 + auto_module.AUTO_GRID_DOCK_STABLE_OBSERVATIONS):
+        for sequence in range(2, 2 + auto_module.AUTO_GROUND_ALIGN_STABLE_OBSERVATIONS):
             self.now += 10
             self.data["board"] = board_packet(sequence, self.now)
             self.controller.update(self.data)
-        self.assertEqual("settle", self.controller.mode)
-
-        self.now += auto_module.AUTO_GRID_SETTLE_MS
+        self.assertEqual("grid_snapshot_wait", self.controller.mode)
+        colors = ("blue", "red", "yellow")
+        self.data["grid_colors"] = {
+            "request_id": self.controller.snapshot_request_id,
+            "vision_seq": 50,
+            "items": tuple({"row": row, "column": column,
+                            "color": colors[column]}
+                           for row in range(3) for column in range(3)),
+            "rx_ms": self.now,
+        }
+        self.data["grid_colors_version"] = 1
         self.controller.update(self.data)
-        self.assertEqual("grid", self.controller.mode)
-
-        for sequence in range(20, 20 + auto_module.AUTO_GRID_LAYOUT_STABLE_OBSERVATIONS):
-            self.now += 10
-            self.data["board"] = board_packet(sequence, self.now)
-            self.data["blocks"] = blocks_packet(sequence, self.now)
-            self.controller.update(self.data)
+        self.rover.servo_control.camera_readback = auto_module.CAMERA_MANUAL_ANGLE_DEG
+        self.finish_camera_settle()
+        self.controller.update(self.data)
         self.assertEqual("fault", self.controller.mode)
+        self.assertEqual("uncalibrated", self.controller.fault_reason)
         self.assertTrue(self.controller.active)
 
     def test_full_mode_waits_for_new_qr_and_freezes_first_task(self):
         set_qr(self.data, 1, "blue")
         self.controller.observe_qr(self.data)
         self.controller.start_full(self.data)
-        self.assertEqual((), self.controller.task)
+        self.assertEqual(("blue",), self.controller.task)
         self.assertEqual(("blue",), self.controller.cached_task)
 
         set_qr(self.data, 2, "red")
         self.controller.observe_qr(self.data)
-        self.assertEqual(("red",), self.controller.task)
+        self.assertEqual(("blue",), self.controller.task)
 
         set_qr(self.data, 3, "yellow")
         self.controller.observe_qr(self.data)
         self.assertEqual(("yellow",), self.controller.cached_task)
-        self.assertEqual(("red",), self.controller.task)
+        self.assertEqual(("blue",), self.controller.task)
 
     def test_complete_holds_until_cancel_without_stopping_stream(self):
         class FinishedArm:
@@ -405,7 +424,7 @@ class PS2FlowTests(unittest.TestCase):
         starts = [value for value in serial.writes if b"@STREAM_START" in value]
         self.assertEqual(1, len(starts))
 
-    def test_r3_snapshot_prints_normalized_board_height(self):
+    def test_r3_snapshot_prints_current_arm_pose(self):
         rover, data = FakeRover(), new_camera_data()
         now = ps2_module.ticks_ms()
         data["board"] = board_packet(1, now, height=243)
@@ -414,8 +433,6 @@ class PS2FlowTests(unittest.TestCase):
             ps2_module._print_calibration_snapshot(rover, data)
         text = output.getvalue()
         self.assertIn("GRID_POSE=", text)
-        self.assertIn("height_480=243", text)
-        self.assertIn("suggested_target=243", text)
 
 
 class FakeArmServoControl:
@@ -463,13 +480,16 @@ class GridArmPoseTests(unittest.TestCase):
     class MovingArm:
         def __init__(self):
             self.commands = []
+            self.roll_deg = self.pitch1_deg = self.pitch2_deg = self.pitch3_deg = 0.0
 
         def move_to_pose(self, *pose, speed_deg_s=None):
             self.commands.append((pose, speed_deg_s))
+            self.roll_deg, self.pitch1_deg, self.pitch2_deg, self.pitch3_deg = pose
 
     class ArmRover:
         def __init__(self):
             self.arm = GridArmPoseTests.MovingArm()
+            self.servo_control = FakeServoControl()
 
     def setUp(self):
         self.original_calibrated = auto_module.ARM_GRID_CALIBRATED
@@ -479,19 +499,25 @@ class GridArmPoseTests(unittest.TestCase):
         auto_module.ARM_GRID_CALIBRATED = self.original_calibrated
         auto_module.ARM_GRID_POSES = self.original_poses
 
-    def test_cell_uses_one_direct_grab_pose(self):
+    def test_cell_builds_hover_grab_hopper_and_gripper_sequence(self):
+        hover = (8.0, 10.0, -20.0, 5.0)
         grab = (10.0, 20.0, -30.0, 40.0)
         auto_module.ARM_GRID_CALIBRATED = True
-        auto_module.ARM_GRID_POSES = {(1, 2): grab}
+        auto_module.ARM_GRID_POSES = {(1, 2): {"hover": hover, "grab": grab}}
         executor = auto_module.GridArmExecutor(self.ArmRover())
 
         ok, reason = executor.start(1, 2)
 
         self.assertTrue(ok)
         self.assertIsNone(reason)
-        self.assertEqual(3, len(executor.steps))
-        self.assertEqual(grab, executor.steps[1][0])
-        self.assertEqual(auto_module.ARM_GRID_GRAB_WAIT_MS, executor.steps[1][1])
+        self.assertEqual(6, len(executor.steps))
+        self.assertEqual(("move", hover), executor.steps[0])
+        self.assertEqual(("move", grab), executor.steps[1])
+        self.assertEqual(("gripper", auto_module.ARM_GRIPPER_CLOSED_DEG),
+                         executor.steps[2])
+        self.assertEqual(("move", auto_module.ARM_HOPPER_POSE), executor.steps[4])
+        self.assertEqual(("gripper", auto_module.ARM_GRIPPER_OPEN_DEG),
+                         executor.steps[5])
 
     def test_old_hover_touch_shape_is_rejected(self):
         auto_module.ARM_GRID_CALIBRATED = True
@@ -500,6 +526,90 @@ class GridArmPoseTests(unittest.TestCase):
         }
         executor = auto_module.GridArmExecutor(self.ArmRover())
         self.assertEqual((False, "pose_missing"), executor.start(0, 0))
+
+    def test_executor_issues_close_then_open_and_finishes_at_hopper(self):
+        rover = self.ArmRover()
+        auto_module.ARM_GRID_CALIBRATED = True
+        auto_module.ARM_GRID_POSES = {
+            (0, 0): {"hover": (1.0, 2.0, 3.0, 4.0),
+                     "grab": (1.0, 5.0, 3.0, 4.0)},
+        }
+        executor = auto_module.GridArmExecutor(rover)
+        self.assertEqual((True, None), executor.start(0, 0))
+        while executor.active:
+            executor.deadline = -1
+            executor.update()
+
+        self.assertEqual(auto_module.ARM_HOPPER_POSE,
+                         rover.arm.commands[-1][0])
+        self.assertEqual(
+            [(auto_module.ARM_GRIPPER_SERVO_ID,
+              auto_module.ARM_GRIPPER_CLOSED_DEG,
+              auto_module.ARM_GRIPPER_SPEED_DEG_S),
+             (auto_module.ARM_GRIPPER_SERVO_ID,
+              auto_module.ARM_GRIPPER_OPEN_DEG,
+              auto_module.ARM_GRIPPER_SPEED_DEG_S)],
+            rover.servo_control.reserve_commands,
+        )
+
+
+class GridPickQueueTests(unittest.TestCase):
+    def setUp(self):
+        self.controller = auto_module.AutonomousController(FakeRover(), FakeSerial())
+
+    @staticmethod
+    def snapshot(request_id=1, sequence=10):
+        colors = ("yellow", "red", "blue")
+        return {
+            "request_id": request_id,
+            "vision_seq": sequence,
+            "items": tuple(
+                {"row": row, "column": column, "color": colors[column]}
+                for row in range(3) for column in range(3)
+            ),
+            "rx_ms": auto_module.ticks_ms(),
+        }
+
+    def test_qr_color_order_does_not_override_row_major_cells(self):
+        self.controller.task = auto_module.parse_task("blue yellow red 2 1 1")
+        self.assertTrue(self.controller._freeze_grid_colors(self.snapshot()))
+        self.assertTrue(self.controller._build_pick_queue())
+        self.assertEqual(
+            [(0, 0), (0, 1), (0, 2), (1, 2)],
+            [item["cell"] for item in self.controller.pick_queue],
+        )
+
+    def test_three_of_one_color_is_rejected(self):
+        self.assertIsNone(auto_module.parse_task("blue 3"))
+
+    def test_matching_snapshot_starts_camera_transition(self):
+        data = new_camera_data()
+        self.controller.task = ("yellow",)
+        self.controller.active = True
+        self.controller._begin_grid_snapshot(data)
+        request_id = self.controller.snapshot_request_id
+        data["grid_colors"] = self.snapshot(request_id=request_id)
+        data["grid_colors_version"] = 1
+
+        self.controller.update(data)
+
+        self.assertEqual("camera_settle", self.controller.mode)
+        self.assertEqual(((0, 0),), tuple(item["cell"] for item in self.controller.pick_queue))
+        self.assertTrue(any(b"@GRID_SNAPSHOT_REQ" in value
+                            for value in self.controller.serial.writes))
+
+    def test_snapshot_timeout_stays_stopped(self):
+        data = new_camera_data()
+        self.controller.task = ("yellow",)
+        self.controller.active = True
+        self.controller._begin_grid_snapshot(data)
+        self.controller.deadline = auto_module.ticks_ms()
+
+        self.controller.update(data)
+
+        self.assertEqual("fault", self.controller.mode)
+        self.assertEqual("grid_snapshot_timeout", self.controller.fault_reason)
+        self.assertEqual("stop", self.controller.rover.calls[-1][0])
 
 
 class FakeMotorBus:

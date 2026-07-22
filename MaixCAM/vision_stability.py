@@ -8,16 +8,27 @@ def _median(values):
 
 class GridStabilizer:
     def __init__(self, required=5, center_jitter=10, corner_jitter=16,
-                 angle_jitter_x10=35):
+                 angle_jitter_x10=35, miss_tolerance=2):
         self.required = max(3, int(required))
         self.center_jitter = int(center_jitter)
         self.corner_jitter = int(corner_jitter)
         self.angle_jitter = int(angle_jitter_x10)
+        self.miss_tolerance = max(0, int(miss_tolerance))
         self.reset()
 
     def reset(self):
         self.layout = None
+        self.stable_layout = None
         self.frames = []
+        self.misses = 0
+
+    def _note_miss(self):
+        """保留最多两帧历史；更长的中断才丢弃稳定窗口。"""
+        self.misses += 1
+        if self.misses > self.miss_tolerance:
+            self.layout = None
+            self.stable_layout = None
+            self.frames = []
 
     @staticmethod
     def _layout_key(blocks, board):
@@ -54,16 +65,17 @@ class GridStabilizer:
 
     def update(self, blocks, board):
         if board is None:
-            self.reset()
+            self._note_miss()
             return None
         output = dict(board)
         output["complete"] = 0
         layout = self._layout_key(blocks, board)
         if not board.get("complete") or layout is None:
-            self.reset()
+            self._note_miss()
             return output
+        self.misses = 0
         if layout != self.layout or (self.frames and not self._near(self.frames[-1], board)):
-            self.layout, self.frames = layout, []
+            self.layout, self.stable_layout, self.frames = layout, None, []
         self.frames.append(board)
         if len(self.frames) > self.required:
             self.frames.pop(0)
@@ -79,4 +91,9 @@ class GridStabilizer:
              for axis in range(2)] for index in range(4)
         ]
         output["complete"] = 1
+        self.stable_layout = tuple(self.layout)
         return output
+
+    def get_stable_layout(self):
+        """返回已通过连续帧验证的行优先颜色布局；未稳定时返回None。"""
+        return None if self.stable_layout is None else tuple(self.stable_layout)
